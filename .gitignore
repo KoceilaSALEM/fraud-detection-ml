@@ -1,0 +1,35 @@
+# Environnements Python
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Données lourdes / sensibles
+data/raw/
+data/processed/
+*.csv
+*.parquet
+*.xlsx
+*.zip
+
+# Outputs générés
+outputs/
+models/
+logs/
+*.log
+
+# Runs / historiques
+outputs/runs/
+outputs/historique_runs.jsonl
+
+# Secrets
+.env
+.env.*
+*.key
+*.pem
+
+# Système
+.DS_Store
+Thumbs.db

@@ -1,0 +1,66 @@
+# ═══════════════════════════════════════════════════════════
+# Orange Money RA&FM — Configuration centrale du système ML
+# Un seul fichier pilote tout : chemins, seuils, budgets.
+# Modifier ici, jamais dans le code.
+# ═══════════════════════════════════════════════════════════
+
+projet:
+  nom: "OM_RAFM_ML"
+  version: "1.0.0"
+  timezone: "Indian/Antananarivo"
+
+donnees:
+  csv_brut: "data/raw/OM_Koceila.csv"
+  parquet: "data/processed/OM_clean.parquet"
+  encodage: "latin-1"
+  separateur: "|"
+  colonnes_attendues: 80          # contrôle d'intégrité à l'ingestion
+  pct_lignes_invalides_max: 0.05  # au-delà -> refus du fichier
+
+modeles:
+  m1_fraude:
+    actif: true
+    budget_alertes_jour: 200
+    contamination: 0.02
+    segments: [faible, moyen, eleve, technique]
+    seuils_segments: {faible: 10, moyen: 100, eleve: 1000}
+  m2_mules:
+    actif: true
+    budget_mules: 500
+    dbscan_eps: 1.5
+    dbscan_min_samples: 5
+    max_points_dbscan: 50000
+    quantile_candidats: 0.90
+  m4_commissions:
+    actif: true
+    contamination: 0.05
+    volume_min_pct_mediane: 0.50   # exclusion jours partiels
+  m5_echec:
+    actif: true
+    seuil_alerte_proba: 0.80
+    garde_fou_auc: 0.97            # au-delà -> suspicion de fuite
+  m6_reconciliation:
+    actif: true
+    seuil_confiance_auto: 85
+    delai_max_h: 24
+
+drift:
+  psi_attention: 0.10      # PSI > 0.10 -> avertissement
+  psi_alerte: 0.25         # PSI > 0.25 -> investigation requise
+  features_surveillees:    # features clés par modèle (PSI calculé dessus)
+    - TRANSACTION_AMOUNT
+  variation_volume_max: 0.50   # ±50% de volume vs référence -> alerte
+
+inference:
+  version_modeles: "latest"     # ou un tag précis ex "2025-09-30_v1"
+  repertoire_sortie: "outputs/runs"
+  format_export: ["parquet", "csv"]
+
+logging:
+  niveau: "INFO"
+  repertoire: "logs"
+  retention_jours: 90       # traçabilité réglementaire
+
+api:
+  host: "0.0.0.0"
+  port: 8000
