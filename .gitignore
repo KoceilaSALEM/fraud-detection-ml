@@ -40,7 +40,6 @@ notebooks/**/*_executed.ipynb
 *.p12
 *.pfx
 secrets.toml
-.streamlit/secrets.toml
 
 # Couverture / build
 .coverage
