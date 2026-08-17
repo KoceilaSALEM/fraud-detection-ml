@@ -1,370 +1,278 @@
-# Fraud Detection ML
+# Fraud Detection ML — Sentinelle
 
-Pipeline batch de détection et d'analyse d'anomalies appliqué à des transactions **Mobile Money**.
+Pipeline batch d'analyse de transactions **Mobile Money** combinant détection d'anomalies, analyse de réseaux, contrôle des commissions, estimation du risque d'échec et réconciliation.
 
-Ce dépôt public contient uniquement le **code source** du projet. Les données, modèles entraînés, résultats d'exécution, artefacts et logs sont volontairement exclus afin de préserver la confidentialité des données et de garantir un dépôt reproductible et publiable.
+Le projet est conçu pour fonctionner en **traitement différé (batch)** à partir de fichiers CSV ou Parquet. Il ne réalise pas de scoring transactionnel en temps réel.
 
-La solution fonctionne en **traitement différé (batch)** à partir de fichiers CSV ou Parquet. Elle ne réalise pas de scoring en temps réel.
+> **Confidentialité** — Les données transactionnelles réelles, secrets, journaux d'exécution et résultats contenant des informations sensibles ne doivent pas être versionnés. Les répertoires prévus pour les artefacts locaux sont conservés dans l'arborescence mais leur contenu généré est exclu par `.gitignore`.
 
 ## Fonctionnalités
 
-| Moteur | Finalité                                               | Méthode principale                                      |
-| ------ | ------------------------------------------------------ | ------------------------------------------------------- |
-| **M1** | Détection d'anomalies transactionnelles                | Isolation Forest par groupe de pairs                    |
-| **M2** | Détection de comptes de transit et de réseaux suspects | Graphe sparse, PageRank et DBSCAN                       |
-| **M4** | Détection d'anomalies de commissions                   | Z-score sur référence historique figée                  |
-| **M5** | Estimation du risque d'échec d'une transaction         | LightGBM avec validation temporelle                     |
-| **M6** | Réconciliation automatique des transactions            | Blocking, appariement par parties et score de confiance |
+| Moteur | Finalité | Méthode principale |
+| --- | --- | --- |
+| **M1** | Détection d'anomalies transactionnelles | Isolation Forest par groupe de pairs |
+| **M2** | Détection de comptes de transit et réseaux suspects | Graphe sparse, PageRank et DBSCAN |
+| **M4** | Détection d'anomalies de commissions | Référence historique et détection statistique |
+| **M5** | Estimation du risque d'échec d'une transaction | LightGBM |
+| **M6** | Réconciliation automatique des transactions | Blocking, appariement et score de confiance |
 
-## Architecture du projet
+Le moteur M3, étudié pendant la phase d'exploration, n'est pas inclus dans la version retenue du pipeline.
+
+## Architecture
 
 ```text
 fraud-detection-ml/
-├── api/
-│   └── main.py
-│
-├── dashboard/
-│   └── app.py
-│
-├── scripts/
-│   ├── construire_pretraitement.py
-│   ├── construire_references_drift.py
-│   ├── publier_modeles.py
-│   ├── run_inference.py
-│   └── evaluer_hors_temps.py
-│
-├── src/
-│   ├── features/
-│   ├── inference/
-│   ├── monitoring/
-│   ├── ingestion.py
-│   └── preprocessing.py
-│
-├── tests/
-│
+├── api/                 # API FastAPI de consultation et déclenchement batch
+├── config/              # Configuration du pipeline
+├── dashboard_dash/      # Interface web Dash
+├── logs/                # Journaux générés localement
+├── models/              # Artefacts et versions de modèles
+├── notebooks/           # Notebooks de préparation et d'expérimentation retenus
+├── outputs/             # Résultats des exécutions batch
+├── scripts/             # Scripts d'exploitation et de préparation
+├── src/                 # Code Python principal
+│   ├── features/        # Construction des variables
+│   ├── inference/       # Pipeline et moteurs d'inférence
+│   └── monitoring/      # Suivi des exécutions et dérive
+├── tests/               # Tests automatisés
 ├── requirements.txt
-├── requirements-dev.txt
 └── README.md
 ```
 
-### Composants principaux
+### Code principal
 
-* `src/ingestion.py` : lecture des fichiers, contrôle du schéma, conversions de types, dédoublonnage et validation des données.
-* `src/preprocessing.py` : gestion des catégories, fréquences, valeurs manquantes et transformations figées à partir des données d'entraînement.
-* `src/features/` : construction des variables utilisées par les différents moteurs.
-* `src/inference/` : moteurs de détection et orchestration des exécutions.
-* `src/monitoring/` : métriques de suivi et détection de dérive des données.
-* `api/` : API FastAPI protégée par clé d'accès.
-* `dashboard/` : interface web Dash utilisée comme interface unique du projet.
-* `tests/` : suite de tests `pytest` unitaires et d'intégration légère.
+Le package `src/` regroupe notamment :
+
+- `config.py` : chargement et gestion de la configuration ;
+- `data_loader.py` : chargement des données ;
+- `validation.py` : contrôles de validation ;
+- `registry.py` : gestion des versions et artefacts des modèles ;
+- `logging_conf.py` : configuration des journaux ;
+- `features/` : feature engineering ;
+- `inference/` : orchestration et exécution des moteurs ;
+- `monitoring/` : métriques et suivi de dérive.
 
 ## Installation
 
-### 1. Créer un environnement virtuel
+Python 3.10 ou version ultérieure est recommandé.
+
+### 1. Cloner le dépôt et créer un environnement virtuel
 
 ```bash
+git clone <URL_DU_DEPOT>
+cd fraud-detection-ml
 python -m venv .venv
 ```
 
-Sous Linux ou macOS :
+Activation sous Linux/macOS :
 
 ```bash
 source .venv/bin/activate
 ```
 
-Sous Windows :
+Activation sous Windows PowerShell :
 
 ```powershell
-.venv\Scripts\activate
+.venv\Scripts\Activate.ps1
 ```
 
-### 2. Installer les dépendances
+### 2. Installer les dépendances du pipeline
 
 ```bash
-pip install -r requirements-dev.txt
+pip install -r requirements.txt
 ```
 
-### 3. Exécuter les tests
+### 3. Installer les dépendances du dashboard
 
 ```bash
-pytest
+pip install -r dashboard_dash/requirements.txt
 ```
 
-## Préparation des artefacts
+## Données
 
-Les répertoires suivants contiennent des éléments générés localement et **ne doivent jamais être publiés** :
+Le pipeline travaille à partir de fichiers **CSV** ou **Parquet**.
+
+Les données réelles ne font pas partie du dépôt et doivent être fournies séparément dans l'environnement d'exécution autorisé.
+
+Les fichiers de données (`*.csv`, `*.parquet`, `*.xlsx`, etc.) sont exclus du versionnement par `.gitignore`.
+
+## Notebooks conservés
+
+La version de remise conserve uniquement les notebooks nécessaires à la traçabilité des principales étapes :
 
 ```text
-data/
+notebooks/
+├── 01_conversion_parquet.ipynb
+├── 01_conversion_parquet_executed.ipynb
+├── M1_fraude/02_M1_isolation_forest_executed.ipynb
+├── M2_mules/03_M2_mules_executed.ipynb
+├── M4_commissions/04_M4_anomalies_commissions_executed.ipynb
+├── M5_echec/05_M5_lightgbm_echec_executed.ipynb
+└── M6_reconciliation/06_M6_reconciliation_v3_executed.ipynb
+```
+
+Les versions intermédiaires et notebooks d'exploration devenus obsolètes ne font pas partie de la version de remise.
+
+## Scripts disponibles
+
+Le dossier `scripts/` contient les points d'entrée d'exploitation actuellement conservés :
+
+```text
+scripts/
+├── construire_reference_m4.py
+├── construire_references_drift.py
+├── publier_modeles.py
+└── run_inference.py
+```
+
+### Construire la référence M4
+
+```bash
+python scripts/construire_reference_m4.py --help
+```
+
+### Construire les références de dérive
+
+```bash
+python scripts/construire_references_drift.py --help
+```
+
+### Publier les modèles
+
+```bash
+python scripts/publier_modeles.py --help
+```
+
+### Lancer une inférence batch
+
+```bash
+python scripts/run_inference.py --help
+```
+
+L'option `--help` permet de consulter les paramètres attendus par la version du script présente dans le dépôt avant toute exécution sur des données.
+
+## Résultats et artefacts
+
+Les répertoires suivants sont utilisés à l'exécution :
+
+```text
 models/
 outputs/
 logs/
 ```
 
-Les artefacts nécessaires à l'inférence sont construits à partir des données d'entraînement :
+- `models/` contient les artefacts nécessaires aux moteurs lorsqu'ils sont disponibles localement ;
+- `outputs/` reçoit les résultats des traitements et les rapports de runs ;
+- `logs/` reçoit les journaux applicatifs.
 
-```bash
-python scripts/construire_pretraitement.py \
-  --donnees data/processed/train.parquet
-
-python scripts/construire_references_drift.py \
-  --donnees data/processed/train.parquet
-
-python scripts/publier_modeles.py
-```
-
-Chaque version publiée des modèles **M1** et **M5** embarque son propre fichier :
-
-```text
-preprocessing.json
-```
-
-Cet artefact contient notamment :
-
-* les catégories connues ;
-* les fréquences calculées ;
-* les médianes utilisées pour les imputations ;
-* les paramètres de prétraitement nécessaires à l'inférence.
-
-Ces informations sont calculées **uniquement sur la période d'entraînement** afin d'éviter toute fuite d'information provenant des données futures.
-
-L'inférence refuse l'exécution lorsqu'un artefact obligatoire est absent. Elle contrôle également la cohérence des artefacts de prétraitement utilisés par M1 et M5.
-
-## Exécution d'une inférence
-
-Pour analyser un nouveau fichier :
-
-```bash
-python scripts/run_inference.py \
-  --donnees data/processed/nouveau_mois.parquet
-```
-
-Le pipeline d'ingestion est exécuté avant les différents moteurs afin d'appliquer de manière homogène :
-
-1. la lecture des données ;
-2. la normalisation du schéma ;
-3. les conversions de types ;
-4. la validation ;
-5. le dédoublonnage.
-
-Les données dédoublonnées sont ensuite transmises aux moteurs de détection.
-
-## Sorties de M6 — Réconciliation
-
-Le moteur M6 distingue les rapprochements automatiques des cas nécessitant une intervention humaine.
-
-Il génère notamment :
-
-```text
-M6_reconciliation_scores.parquet
-M6_reconciliation_alertes.csv
-M6_reconciliation_manuels.csv
-```
-
-### `M6_reconciliation_scores.parquet`
-
-Contient les rapprochements automatiques ainsi que leurs scores de confiance.
-
-### `M6_reconciliation_alertes.csv`
-
-Contient les rapprochements proposés lorsque le niveau de confiance nécessite une validation.
-
-### `M6_reconciliation_manuels.csv`
-
-Contient les transactions pour lesquelles aucun candidat suffisamment pertinent n'a été identifié et qui doivent être examinées manuellement.
-
-## Évaluation hors temps
-
-Afin d'éviter d'évaluer les modèles sur une période déjà utilisée lors de leur développement, une évaluation temporelle peut être réalisée sur un mois réellement postérieur à la période d'entraînement.
-
-```bash
-python scripts/evaluer_hors_temps.py \
-  --donnees data/processed/mois_ulterieur.parquet \
-  --fin-entrainement AAAA-MM-JJ \
-  --sortie evaluation_hors_temps.json
-```
-
-Le script vérifie que la période d'évaluation ne chevauche pas la période d'entraînement.
-
-Dans le cas contraire, l'évaluation est interrompue.
-
-Pour **M5**, les principales métriques supervisées sont notamment :
-
-* ROC-AUC ;
-* PR-AUC.
-
-Pour les moteurs non supervisés ou fondés sur des règles statistiques, notamment **M1, M2 et M4**, l'analyse quantitative est complétée par une **validation métier des alertes produites**.
+Ces éléments doivent être manipulés conformément aux règles de confidentialité de l'environnement cible. Les nouveaux artefacts générés dans ces répertoires sont exclus du versionnement.
 
 ## API FastAPI
 
-L'API permet de déclencher les traitements tout en appliquant plusieurs contrôles de sécurité.
+L'API se trouve dans `api/main.py`.
 
-### Configuration
+Elle permet principalement :
 
-Définir une clé API avant le lancement.
+- de vérifier l'état du système avec `/health` ;
+- de consulter les modèles publiés avec `/modeles` ;
+- de consulter l'historique et les rapports de runs ;
+- de consulter les alertes et informations de drift ;
+- de déclencher une inférence batch avec `POST /inference`.
 
-Sous Linux ou macOS :
-
-```bash
-export FRAUD_API_KEY="une-cle-longue-et-aleatoire"
-```
-
-Sous Windows PowerShell :
-
-```powershell
-$env:FRAUD_API_KEY="une-cle-longue-et-aleatoire"
-```
-
-Lancer ensuite l'API :
+Lancement :
 
 ```bash
 uvicorn api.main:app --host 0.0.0.0 --port 8000
 ```
 
-Les requêtes protégées doivent transmettre l'en-tête :
+Documentation OpenAPI une fois le serveur démarré :
 
 ```text
-X-API-Key
+http://localhost:8000/docs
 ```
 
-### Mesures de sécurité
+### Sécurité de l'API
 
-L'API applique notamment les contrôles suivants :
+La version actuelle de `api/main.py` ne doit **pas être exposée directement sur Internet**. L'authentification et le contrôle d'accès doivent être assurés par l'environnement de déploiement (reverse proxy, IAM, réseau privé ou mécanisme équivalent) avant une utilisation en production.
 
-* authentification par clé API ;
-* restriction des fichiers aux répertoires autorisés ;
-* contrôle des extensions ;
-* limitation de la taille des fichiers ;
-* validation des chemins ;
-* prévention des traversées de répertoires ;
-* prévention des exécutions concurrentes non autorisées.
-
-Les fichiers analysés doivent se trouver sous :
-
-```text
-data/raw/
-```
-
-ou :
-
-```text
-data/processed/
-```
-
-Les secrets ne doivent jamais être stockés directement dans le code source ou versionnés dans Git.
+Le paramètre transmis à `POST /inference` correspond à un chemin de fichier accessible par le serveur. Il doit donc être contrôlé dans un environnement de production.
 
 ## Dashboard Dash
 
-Dash constitue l'interface web retenue pour le projet.
+L'interface utilisateur active est située dans `dashboard_dash/`.
 
-### Configuration
-
-Définir les identifiants avant le lancement.
-
-Sous Linux ou macOS :
+Installation et lancement depuis la racine :
 
 ```bash
-export FRAUD_DASH_USER="analyste"
-export FRAUD_DASH_PASSWORD="un-secret-long-et-aleatoire"
+pip install -r dashboard_dash/requirements.txt
+python dashboard_dash/app.py
 ```
 
-Sous Windows PowerShell :
+Par défaut, l'application Dash est accessible localement sur le port configuré par l'application, généralement :
 
-```powershell
-$env:FRAUD_DASH_USER="analyste"
-$env:FRAUD_DASH_PASSWORD="un-secret-long-et-aleatoire"
+```text
+http://localhost:8050
 ```
 
-Lancer ensuite le dashboard :
+Le dashboard fournit des vues dédiées à la synthèse et aux moteurs M1, M2, M4, M5 et M6. Il exploite les résultats produits par le pipeline batch.
 
-```bash
-python dashboard/app.py
-```
-
-### Sécurisation du téléversement
-
-Le mécanisme de téléversement applique plusieurs contrôles :
-
-* limitation de la taille des fichiers ;
-* liste d'extensions autorisées ;
-* validation du nom et du chemin du fichier ;
-* prévention des traversées de répertoires ;
-* rejet des formats non pris en charge.
-
-Les routes du dashboard sont protégées côté serveur par **HTTP Basic**.
-
-Pour un déploiement en production, l'authentification doit idéalement être centralisée au niveau du reverse proxy ou du fournisseur SSO de l'environnement cible. La terminaison TLS doit également être assurée en amont de l'application.
+Pour les détails spécifiques à l'interface, consulter `dashboard_dash/README.md`.
 
 ## Tests
 
-La suite de tests repose sur `pytest`.
-
-Pour exécuter l'ensemble des tests :
+Les tests automatisés sont regroupés dans `tests/` et utilisent `pytest`.
 
 ```bash
 pytest
 ```
 
-Pour obtenir davantage de détails :
+ou, en mode détaillé :
 
 ```bash
 pytest -v
 ```
 
-Les tests couvrent notamment :
+Avant toute remise ou mise en production, la suite de tests doit être exécutée dans un environnement propre avec les dépendances installées.
 
-* l'ingestion ;
-* la validation du schéma ;
-* le dédoublonnage ;
-* le prétraitement ;
-* les principaux moteurs ;
-* les contrôles de sécurité ;
-* les scénarios d'intégration légère.
+## Confidentialité et règles de versionnement
 
-## Confidentialité et publication
+Ne jamais ajouter au dépôt :
 
-Ce dépôt est conçu pour pouvoir être publié sans exposer de données ou d'artefacts internes.
+- données transactionnelles réelles ;
+- identifiants clients ou données personnelles ;
+- mots de passe, clés API ou jetons ;
+- fichiers `.env` ;
+- credentials cloud ;
+- journaux contenant des informations internes ;
+- exports CSV/Parquet issus de données réelles ;
+- nouveaux artefacts de modèles ou résultats non validés pour diffusion.
 
-Les éléments suivants doivent rester exclus du versionnement :
-
-```text
-data/
-models/
-outputs/
-logs/
-.env
-*.parquet
-*.csv
-```
-
-Aucune donnée transactionnelle réelle, clé API, mot de passe, modèle entraîné ou sortie contenant des informations sensibles ne doit être ajoutée au dépôt.
-
-Avant toute publication, vérifier systématiquement les fichiers suivis par Git :
+Avant chaque publication :
 
 ```bash
 git status
+git diff --cached
 git ls-files
 ```
 
-Les secrets doivent être fournis exclusivement par des variables d'environnement ou par le gestionnaire de secrets de l'environnement de déploiement.
+La suppression d'un fichier dans un commit récent ne le retire pas automatiquement de l'historique Git. Pour une publication externe, l'historique du dépôt doit donc également faire l'objet d'une vérification de confidentialité.
 
-## Principes de reproductibilité
+## Reproductibilité
 
-Le projet applique plusieurs principes destinés à limiter les écarts entre entraînement, évaluation et inférence :
+Le projet sépare volontairement :
 
-* pipeline d'ingestion commun aux différents moteurs ;
-* dédoublonnage effectué avant l'analyse ;
-* prétraitement figé à partir de la période d'entraînement ;
-* versionnement des artefacts associés aux modèles ;
-* séparation entre données d'entraînement et données d'évaluation ;
-* validation temporelle pour les modèles supervisés ;
-* contrôles de cohérence avant l'inférence ;
-* tests automatisés avec `pytest`.
+1. les données d'entrée ;
+2. le code de préparation et de feature engineering ;
+3. les moteurs d'analyse ;
+4. les artefacts de modèles ;
+5. les résultats d'exécution ;
+6. l'API de consultation ;
+7. le dashboard de restitution.
 
-## Limites du périmètre
+Cette organisation permet de faire évoluer les différents composants sans confondre le code source, les données et les sorties générées.
 
-La solution est actuellement conçue pour fonctionner en **mode batch** à partir de fichiers CSV ou Parquet.
+## Périmètre
 
-Elle ne suppose pas l'existence d'un flux transactionnel temps réel et ne revendique donc pas de capacité de scoring en temps réel.
+Cette version constitue un pipeline analytique **batch** pour l'étude et la détection de comportements à risque dans des transactions Mobile Money.
 
-L'architecture permet néanmoins de séparer clairement l'ingestion, le prétraitement, les moteurs de détection, l'API et l'interface afin de faciliter les évolutions futures.
+Elle est destinée à l'analyse différée de fichiers et à la restitution des résultats via une API et un dashboard. Elle ne revendique pas de traitement ni de scoring transactionnel temps réel.
