@@ -33,7 +33,7 @@ modeles:
     quantile_candidats: 0.90
   m4_commissions:
     actif: true
-    contamination: 0.05
+    seuil_z: 2.5                   # alerte si |z| dépasse ce seuil
     volume_min_pct_mediane: 0.50   # exclusion jours partiels
   m5_echec:
     actif: true
