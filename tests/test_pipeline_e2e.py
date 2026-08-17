@@ -179,6 +179,18 @@ exports = sorted(f.name for f in rep_run.iterdir())
 print(f'Exports ({len(exports)}) : {exports}')
 
 assert len(rapport['modeles_ok']) == 5, f"Attendu 5 OK, obtenu {rapport['modeles_ok']}"
+
+# M4 : le moteur déclaré et le seuil réellement utilisé doivent être tracés.
+m4_stats = rapport['modeles']['m4_commissions']
+assert m4_stats['moteur'] == 'z_score_historique'
+assert m4_stats['seuil_z'] == 2.5
+
+# M6 : catégories mutuellement exclusives et exhaustives.
+m6_stats = rapport['modeles']['m6_reconciliation']
+assert m6_stats['n_alertes'] == m6_stats['n_suggestion']
+assert (m6_stats['n_auto_fiable'] + m6_stats['n_suggestion']
+        + m6_stats['n_manuel']) == m6_stats['n_a_reconcilier']
+
 shutil.rmtree(TMP)
 print()
 print('OK PIPELINE COMPLET 5/5 MODELES - INFERENCE BOUT EN BOUT VALIDEE')

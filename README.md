@@ -13,9 +13,17 @@ Auteur : Koceila SALEM.
 |----|--------|-----------|--------|
 | M1 | Détection fraude | Isolation Forest (non supervisé) | En cours |
 | M2 | Réseaux de mules | Graphe + DBSCAN | À faire |
-| M4 | Anomalies commissions | Isolation Forest + Z-score | À faire |
+| M4 | Anomalies commissions | Z-score vs référence historique figée | Fonctionnel |
 | M5 | Prédiction d'échec | LightGBM (supervisé, cible=TF) | À faire |
-| M6 | Réconciliation | TF-IDF + cosine similarity | À faire |
+| M6 | Réconciliation | Record linkage (blocking + parties) | Fonctionnel |
+
+### Sorties de la réconciliation M6
+- `M6_reconciliation_scores.parquet` : appariements automatiques (confiance ≥ seuil)
+- `M6_reconciliation_alertes.csv` : suggestions à valider par un analyste
+- `M6_reconciliation_manuels.csv` : cas sans candidat compatible
+
+La somme des trois catégories est contrôlée à chaque run et doit être égale
+au nombre total de transactions à réconcilier.
 
 > M3 (SIM Swap) abandonné : signaux insuffisants dans les données
 > (SENDER_ACC_STATUS constant, INITIATOR_MSISDN à 0.07%).
