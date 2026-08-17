@@ -1,0 +1,23 @@
+{
+  "version": "v2 - production (transit+pagerank+dbscan)",
+  "FEATURES": [
+    "in_degree",
+    "out_degree",
+    "ratio_transit",
+    "transit_score",
+    "diversite",
+    "log_montant_transit",
+    "pagerank"
+  ],
+  "poids": {
+    "transit": 0.35,
+    "diversite": 0.25,
+    "pagerank": 0.2,
+    "cluster": 0.2
+  },
+  "dbscan_eps": 1.5,
+  "dbscan_min_samples": 5,
+  "budget_mules": 500,
+  "n_transit": 968026,
+  "n_clusters": 22
+}

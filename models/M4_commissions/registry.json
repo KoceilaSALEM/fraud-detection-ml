@@ -1,0 +1,17 @@
+{
+  "modele": "M4_commissions",
+  "latest": "2026-06-11_v1",
+  "versions": [
+    {
+      "tag": "2026-06-11_v1",
+      "date_publication": "2026-06-11T11:49:16",
+      "metriques": {},
+      "fichiers": [
+        "iforest.pkl",
+        "params.json",
+        "scaler.pkl",
+        "stats_par_service.json"
+      ]
+    }
+  ]
+}

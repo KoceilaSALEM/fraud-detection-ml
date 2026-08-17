@@ -1,0 +1,16 @@
+{
+  "modele": "M5_echec",
+  "latest": "2026-06-11_v1",
+  "versions": [
+    {
+      "tag": "2026-06-11_v1",
+      "date_publication": "2026-06-11T12:21:37",
+      "metriques": {},
+      "fichiers": [
+        "lightgbm.pkl",
+        "lightgbm.txt",
+        "params.json"
+      ]
+    }
+  ]
+}

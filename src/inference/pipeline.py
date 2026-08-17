@@ -54,7 +54,7 @@ class PipelineInference:
 
     # ─────────────────────────────────────────────────────────────────
     def executer(self, df: pd.DataFrame, modeles: list[str] | None = None,
-                 version: str = "latest") -> dict:
+                 version: str = "latest", source: str = "") -> dict:
         """
         Exécute le run complet sur un DataFrame de transactions.
 
@@ -73,10 +73,24 @@ class PipelineInference:
         rep_run.mkdir(parents=True, exist_ok=True)
         logger.info(f"═══ RUN {run.run_id} ═══ {len(df):,} transactions")
 
+        # Métadonnées de période (pour la navigation par fichier dans le dashboard)
+        try:
+            dates = pd.to_datetime(df[cfg.COL_DATE], errors="coerce")
+            periode = {"debut": str(dates.min().date()), "fin": str(dates.max().date())}
+        except Exception:                            # noqa: BLE001
+            periode = {}
+        run.enregistrer_global(source=source, periode=periode,
+                               n_transactions=int(len(df)))
+
+        # Progression temps réel (consommée par le dashboard)
+        self._rep_run = rep_run
+        self._progression("validation", 2)
+
         # 1. VALIDATION (bloquant si fichier invalide)
         rapport_validation = valider_entree(df)
         run.enregistrer_global(validation=rapport_validation)
 
+        self._progression("drift", 5)
         # 2. DRIFT (avertit, ne bloque pas — décision opérateur)
         drift = self._verifier_drift(df)
         run.enregistrer_global(drift=drift)
@@ -88,13 +102,19 @@ class PipelineInference:
 
         # 3. FEATURES (une seule fois, pour M1 + M5)
         modeles_actifs = self._modeles_actifs(modeles)
+        self._progression("features", 8)
         df_feat = None
         if BESOIN_FEATURES & set(modeles_actifs):
             df_feat = self._calculer_features(df)
 
         # 4. SCORING — isolation des erreurs par modèle
+        # poids de progression par étape (features = le plus lourd)
+        pct = 50 if df_feat is not None else 10
+        pas = (96 - pct) / max(len(modeles_actifs), 1)
         resultats, erreurs = {}, {}
         for nom in modeles_actifs:
+            self._progression(nom, int(pct))
+            pct += pas
             try:
                 moteur = MOTEURS[nom](
                     self.racine_modeles, version=version,
@@ -120,13 +140,26 @@ class PipelineInference:
             modeles_ok=sorted(resultats),
             modeles_ko=sorted(erreurs),
             repertoire_exports=str(rep_run))
+        self._progression("finalisation", 98)
         rapport = run.finaliser(self.racine / "outputs" / "historique_runs.jsonl")
         (rep_run / "rapport_run.json").write_text(
             json.dumps(rapport, indent=2, ensure_ascii=False, default=str),
             encoding="utf-8")
+        self._progression("terminé", 100)
         statut = "✅ COMPLET" if not erreurs else f"⚠️ PARTIEL ({len(erreurs)} échec(s))"
         logger.info(f"═══ RUN {run.run_id} {statut} → {rep_run} ═══")
         return rapport
+
+    def _progression(self, etape: str, pct: int) -> None:
+        """Écrit l'avancement du run (consommé par le dashboard)."""
+        try:
+            f = self._rep_run / "progression.json"
+            f.write_text(json.dumps({
+                "etape": etape, "pct": pct,
+                "maj": datetime.now().isoformat(timespec="seconds")}),
+                encoding="utf-8")
+        except Exception:                            # noqa: BLE001
+            pass                                     # la progression ne doit jamais bloquer
 
     # ─────────────────────────────────────────────────────────────────
     def _modeles_actifs(self, demandes: list[str] | None) -> list[str]:

@@ -1,0 +1,95 @@
+{
+  "run_id": "20260611_145856",
+  "debut": "2026-06-11T14:58:56",
+  "modeles": {
+    "m1_fraude": {
+      "n_alertes": 6202,
+      "pct_alertes": 0.0244,
+      "budget_jour": 200,
+      "segments": {
+        "moyen": 10209253,
+        "eleve": 7845186,
+        "technique": 4803242,
+        "faible": 2598786
+      },
+      "score_moyen_alertes": 99.3,
+      "duree_s": 233.7,
+      "n_entree": 25456467
+    },
+    "m2_mules": {
+      "n_alertes": 500,
+      "n_transit": 968026,
+      "n_clusters": 22,
+      "n_aretes": 6750838,
+      "duree_s": 47.4,
+      "n_entree": 25456467
+    },
+    "m4_commissions": {
+      "n_alertes": 6,
+      "n_jours_services": 318,
+      "services_inconnus": [],
+      "duree_s": 23.8,
+      "n_entree": 25456467
+    },
+    "m5_echec": {
+      "n_alertes": 1257029,
+      "pct_alertes": 4.938,
+      "proba_moyenne": 0.1813,
+      "seuil": 0.8,
+      "duree_s": 44.7,
+      "n_entree": 25456467
+    },
+    "m6_reconciliation": {
+      "n_alertes": 536,
+      "n_a_reconcilier": 102426,
+      "n_auto_fiable": 100156,
+      "n_suggestion": 1961,
+      "n_manuel": 309,
+      "taux_auto_pct": 97.8,
+      "gain_heures": 5008.0,
+      "duree_s": 78.2,
+      "n_entree": 25456467
+    }
+  },
+  "validation": {
+    "controles": [
+      "Colonnes requises présentes (7)",
+      "Volume : 25,456,467 transactions",
+      "Montants numériques OK",
+      "Dates parsables OK"
+    ],
+    "avertissements": [
+      "10,161 TRANSFER_ID dupliqués (dédoublonnage appliqué en aval)"
+    ],
+    "valide": true
+  },
+  "drift": {
+    "variables": {
+      "TRANSACTION_AMOUNT": {
+        "psi": 0.0,
+        "verdict": "stable"
+      }
+    },
+    "globaux": {
+      "volume": {
+        "reference": 25456467,
+        "nouveau": 25456467,
+        "variation_pct": 0.0,
+        "verdict": "stable"
+      }
+    },
+    "verdict_global": "stable"
+  },
+  "erreurs": {},
+  "modeles_ok": [
+    "m1_fraude",
+    "m2_mules",
+    "m4_commissions",
+    "m5_echec",
+    "m6_reconciliation"
+  ],
+  "modeles_ko": [],
+  "repertoire_exports": "/home/koceila_salem_orange_com/ML/outputs/runs/20260611_145856",
+  "fin": "2026-06-11T15:22:15",
+  "duree_totale_s": 1399.0
+}

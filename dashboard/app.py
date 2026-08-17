@@ -11,13 +11,17 @@ Lancement :
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
+import time
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+from network_view import render_network_intelligence
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -95,6 +99,54 @@ def vide(message: str) -> None:
         f'text-align:center;color:{DIM}">{message}</div>', unsafe_allow_html=True)
 
 
+def libelle_run(run_id: str) -> str:
+    """Libellé lisible : 'run_id · période · fichier source'."""
+    try:
+        r = charger_rapport(run_id)
+        per = r.get("periode") or {}
+        morceaux = [run_id]
+        if per.get("debut"):
+            morceaux.append(f"{per['debut']} → {per['fin']}")
+        if r.get("source"):
+            morceaux.append(r["source"])
+        return "  ·  ".join(morceaux)
+    except Exception:
+        return run_id
+
+
+def runs_en_cours() -> list[dict]:
+    """Runs avec progression < 100 et sans rapport final."""
+    actifs = []
+    if not RUNS_DIR.exists():
+        return actifs
+    for d in RUNS_DIR.iterdir():
+        prog = d / "progression.json"
+        if prog.exists() and not (d / "rapport_run.json").exists():
+            try:
+                pj = json.loads(prog.read_text(encoding="utf-8"))
+                pj["run_id"] = d.name
+                actifs.append(pj)
+            except Exception:
+                pass
+    return sorted(actifs, key=lambda x: x["run_id"], reverse=True)
+
+
+def lancer_inference(fichier: Path, modeles: list[str] | None = None) -> None:
+    """Lance le run en arrière-plan (le dashboard reste réactif)."""
+    cmd = [sys.executable, str(ROOT / "scripts" / "run_inference.py"),
+           "--donnees", str(fichier)]
+    if modeles:
+        cmd += ["--modeles"] + modeles
+    kwargs = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = 0x00000208          # DETACHED | NEW_GROUP
+    else:
+        kwargs["start_new_session"] = True
+    subprocess.Popen(cmd, cwd=str(ROOT),
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     **kwargs)
+
+
 def fmt(n) -> str:
     """Format milliers avec espaces (convention FR)."""
     try:
@@ -103,32 +155,48 @@ def fmt(n) -> str:
         return str(n)
 
 
-# ════════════════════════ barre latérale ════════════════════════
+# ═══════════ éléments communs aux deux pages (sidebar) ═══════════
 with st.sidebar:
     if LOGO.exists():
         st.image(str(LOGO), width=110)
     st.markdown("### Orange Money\n**RA&FM — Pilotage ML**")
+    _actifs = runs_en_cours()
+    if _actifs:
+        st.markdown(badge(f"run en cours · {_actifs[0].get('pct', 0)} %", "brand"),
+                    unsafe_allow_html=True)
     st.markdown("---")
+
+# état global de la page consultation (défini par page_dashboard)
+run_id, rapport, ok, ko, drift_v = None, {}, [], [], "n/a"
+
+
+def page_dashboard():
+    """Onglet 1 — consultation des résultats (analystes)."""
+    global run_id, rapport, ok, ko, drift_v
 
     runs = lister_runs()
     if not runs:
-        st.warning("Aucun run d'inférence.\nLancer :\n`python scripts/run_inference.py`")
-        st.stop()
-    run_id = st.selectbox("Run analysé", runs, index=0)
-    rapport = charger_rapport(run_id)
+        entete_vue("Tableau de bord", "Aucun run d'inférence disponible")
+        st.info("👋 Bienvenue. Pour commencer : ouvrir l'onglet "
+                "**⚙️ Données & Inférence** (barre latérale), déposer un fichier "
+                "et lancer le scoring. Les résultats apparaîtront ici.")
+        return
 
-    vue = st.radio("Navigation", ["Synthèse"] + list(MODELES.values()),
-                   label_visibility="collapsed")
-    st.markdown("---")
+    with st.sidebar:
+        run_id = st.selectbox("Run analysé", runs, index=0, format_func=libelle_run)
+        rapport = charger_rapport(run_id)
+        vue = st.radio("Vue", ["Synthèse"] + list(MODELES.values()),
+                       label_visibility="collapsed")
+        st.markdown("---")
+        ok, ko = rapport.get("modeles_ok", []), rapport.get("modeles_ko", [])
+        drift_v = (rapport.get("drift") or {}).get("verdict_global", "n/a")
+        st.markdown(
+            f"**Santé du système**<br>"
+            f"Modèles : {badge(f'{len(ok)}/5 OK', 'ok' if not ko else 'crit')}<br>"
+            f"Drift : {badge(drift_v, {'stable': 'ok', 'ATTENTION': 'warn'}.get(drift_v, 'crit') if drift_v != 'n/a' else 'info')}",
+            unsafe_allow_html=True)
 
-    # santé système (toujours visible — règle des 5 secondes)
-    ok, ko = rapport.get("modeles_ok", []), rapport.get("modeles_ko", [])
-    drift_v = (rapport.get("drift") or {}).get("verdict_global", "n/a")
-    st.markdown(
-        f"**Santé du système**<br>"
-        f"Modèles : {badge(f'{len(ok)}/5 OK', 'ok' if not ko else 'crit')}<br>"
-        f"Drift : {badge(drift_v, {'stable': 'ok', 'ATTENTION': 'warn'}.get(drift_v, 'crit') if drift_v != 'n/a' else 'info')}",
-        unsafe_allow_html=True)
+    VUES_CONSULTATION[vue]()
 
 
 # ════════════════════════ VUE SYNTHÈSE ════════════════════════
@@ -271,6 +339,11 @@ def vue_m2():
     kpi(c[1], s.get("n_clusters", 0), "réseaux organisés", "clusters DBSCAN", "warn")
     kpi(c[2], fmt(s.get("n_transit", 0)), "comptes de transit")
     kpi(c[3], fmt(s.get("n_aretes", 0)), "arêtes du graphe")
+
+    # ── Graphe interactif du réseau (style Neo4j) ──
+    st.markdown("<br>", unsafe_allow_html=True)
+    render_network_intelligence(ROOT / "outputs" / "M2_mules")
+    st.markdown("---")
 
     alertes = charger_alertes(run_id, "M2_mules")
     if alertes is not None and len(alertes):
@@ -430,9 +503,116 @@ def vue_m6():
             vide("Aucune suggestion — tout est apparié automatiquement ou manuel.")
 
 
-# ════════════════════════ routage ════════════════════════
-VUES = {"Synthèse": vue_synthese,
-        MODELES["M1_fraude"]: vue_m1, MODELES["M2_mules"]: vue_m2,
-        MODELES["M4_commissions"]: vue_m4, MODELES["M5_echec"]: vue_m5,
-        MODELES["M6_reconciliation"]: vue_m6}
-VUES[vue]()
+# ═══════════ Onglet 2 — administration (opérateur) ═══════════
+def page_donnees():
+    entete_vue("Données & Inférence",
+               "Déposer un fichier, lancer le scoring, suivre l'avancement",
+               badge("pilotage", "brand"))
+
+    # ── A. run(s) en cours : progression + temps restant ──
+    actifs = runs_en_cours()
+    if actifs:
+        a = actifs[0]
+        st.markdown("##### ⏱ Inférence en cours")
+        pct = max(int(a.get("pct", 0)), 1)
+        debut = datetime.strptime(a["run_id"], "%Y%m%d_%H%M%S")
+        ecoule = (datetime.now() - debut).total_seconds()
+        restant = ecoule / pct * (100 - pct)
+        c = st.columns(4)
+        kpi(c[0], f"{pct} %", "avancement", f"étape : {a.get('etape', '?')}", "warn")
+        kpi(c[1], f"{ecoule/60:.0f} min", "temps écoulé")
+        kpi(c[2], f"~{restant/60:.0f} min", "temps restant estimé",
+            "affiné en cours de run")
+        kpi(c[3], a["run_id"], "identifiant du run")
+        st.progress(pct / 100)
+        st.caption("La page s'actualise automatiquement toutes les 10 s. "
+                   "Le run apparaîtra dans le sélecteur une fois terminé.")
+        time.sleep(10)
+        st.cache_data.clear()
+        st.rerun()
+
+    # ── B. déposer un nouveau fichier ──
+    st.markdown("##### 1 · Déposer un fichier (CSV ou Parquet)")
+    up = st.file_uploader("Export DWH mensuel", type=["csv", "parquet"],
+                          help="Jusqu'à 4 Go via le navigateur. Au-delà, déposer "
+                               "le fichier directement dans data/raw/ (SFTP) : "
+                               "il apparaîtra dans la liste ci-dessous.")
+    if up is not None:
+        dest = ROOT / "data" / "raw" / up.name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.exists():
+            st.info(f"{up.name} existe déjà — il sera utilisé tel quel.")
+        else:
+            with st.spinner(f"Enregistrement de {up.name}..."):
+                with open(dest, "wb") as f:
+                    f.write(up.getbuffer())
+            st.success(f"✅ {up.name} enregistré dans data/raw/")
+            st.cache_data.clear()
+
+    # ── C. choisir un fichier et lancer ──
+    st.markdown("##### 2 · Choisir le fichier à scorer")
+    fichiers = []
+    for dossier in (ROOT / "data" / "raw", ROOT / "data" / "processed"):
+        if dossier.exists():
+            fichiers += [f for f in dossier.iterdir()
+                         if f.suffix in (".csv", ".parquet")]
+    if not fichiers:
+        vide("Aucun fichier dans data/raw/ ni data/processed/.")
+        return
+    fichiers = sorted(fichiers, key=lambda f: f.stat().st_mtime, reverse=True)
+    libelles = {f"{f.name}  ·  {f.stat().st_size/1e9:.2f} Go  ·  "
+                f"{datetime.fromtimestamp(f.stat().st_mtime):%d/%m/%Y %H:%M}": f
+                for f in fichiers}
+    choix = st.selectbox("Fichier", list(libelles))
+    fichier = libelles[choix]
+
+    sous = st.multiselect(
+        "Modèles à exécuter (vide = les 5)",
+        list(MODELES.keys()),
+        format_func=lambda k: MODELES[k].lower().replace("_", " "),
+        help="M1 et M5 déclenchent le feature engineering complet (long sur "
+             "très gros fichiers).")
+    sous_cles = [s.lower() for s in sous] if sous else None
+
+    st.markdown("##### 3 · Lancer")
+    if st.button("🚀 Lancer l'inférence", type="primary", disabled=bool(actifs)):
+        lancer_inference(fichier, sous_cles)
+        st.success(f"Inférence lancée sur **{fichier.name}** — suivi ci-dessus.")
+        time.sleep(2)
+        st.rerun()
+
+    # ── D. historique des fichiers déjà scorés ──
+    runs_l = lister_runs()
+    if runs_l:
+        st.markdown("##### Fichiers déjà analysés")
+        lignes = []
+        for rid in runs_l[:15]:
+            try:
+                r = charger_rapport(rid)
+                per = r.get("periode") or {}
+                lignes.append({
+                    "Run": rid, "Fichier": r.get("source", "—"),
+                    "Période données": f"{per.get('debut','?')} → {per.get('fin','?')}",
+                    "Transactions": fmt(r.get("n_transactions", "—")),
+                    "Statut": "✅" if not r.get("modeles_ko") else "⚠️ partiel",
+                })
+            except Exception:
+                pass
+        st.dataframe(pd.DataFrame(lignes), hide_index=True, use_container_width=True)
+        st.caption("Pour consulter une période : sélectionner son run dans la "
+                   "barre latérale, puis naviguer dans les vues.")
+
+
+# ════════════════════════ navigation ════════════════════════
+VUES_CONSULTATION = {
+    "Synthèse": vue_synthese,
+    MODELES["M1_fraude"]: vue_m1, MODELES["M2_mules"]: vue_m2,
+    MODELES["M4_commissions"]: vue_m4, MODELES["M5_echec"]: vue_m5,
+    MODELES["M6_reconciliation"]: vue_m6,
+}
+
+pg = st.navigation([
+    st.Page(page_dashboard, title="Tableau de bord", icon="📊", default=True),
+    st.Page(page_donnees, title="Données & Inférence", icon="⚙️"),
+])
+pg.run()

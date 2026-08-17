@@ -1,0 +1,613 @@
+"""
+Dashboard RA&FM Orange Money — poste de pilotage des 5 modèles ML.
+
+Public : analystes fraude & Revenue Assurance (dashboard opérationnel).
+Question à laquelle la synthèse répond en 5 secondes :
+    « Que dois-je traiter aujourd'hui, et le système est-il sain ? »
+
+Lancement :
+    streamlit run dashboard/app.py
+"""
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import streamlit as st
+from network_view import render_network_intelligence
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from dashboard import theme                                    # noqa: E402
+from dashboard.theme import (ORANGE, CRITIQUE, ELEVE, MODERE,  # noqa: E402
+                             NORMAL, DIM, badge, entete_vue, kpi,
+                             plotly_layout)
+
+RUNS_DIR = ROOT / "outputs" / "runs"
+HISTORIQUE = ROOT / "outputs" / "historique_runs.jsonl"
+LOGO = Path(__file__).parent / "assets" / "logo_orange.png"
+
+MODELES = {
+    "M1_fraude": "Fraude transactionnelle",
+    "M2_mules": "Réseaux de mules",
+    "M4_commissions": "Anomalies commissions",
+    "M5_echec": "Prédiction d'échec",
+    "M6_reconciliation": "Réconciliation",
+}
+
+st.set_page_config(page_title="Orange Money — RA&FM", page_icon="🟧",
+                   layout="wide", initial_sidebar_state="expanded")
+theme.appliquer_theme()
+
+
+# ════════════════════════ accès aux données ════════════════════════
+@st.cache_data(ttl=60)
+def lister_runs() -> list[str]:
+    if not RUNS_DIR.exists():
+        return []
+    return sorted((d.name for d in RUNS_DIR.iterdir()
+                   if (d / "rapport_run.json").exists()), reverse=True)
+
+
+@st.cache_data(ttl=60)
+def charger_rapport(run_id: str) -> dict:
+    return json.loads((RUNS_DIR / run_id / "rapport_run.json")
+                      .read_text(encoding="utf-8"))
+
+
+@st.cache_data(ttl=60)
+def charger_alertes(run_id: str, modele: str) -> pd.DataFrame | None:
+    f = RUNS_DIR / run_id / f"{modele}_alertes.csv"
+    return pd.read_csv(f) if f.exists() else None
+
+
+@st.cache_data(ttl=60)
+def charger_scores(run_id: str, modele: str) -> pd.DataFrame | None:
+    for ext, lecteur in ((".parquet", pd.read_parquet), (".csv", pd.read_csv)):
+        f = RUNS_DIR / run_id / f"{modele}_scores{ext}"
+        if f.exists():
+            try:
+                return lecteur(f)
+            except Exception:
+                return None
+    return None
+
+
+@st.cache_data(ttl=60)
+def charger_historique_runs() -> list[dict]:
+    if not HISTORIQUE.exists():
+        return []
+    return [json.loads(l) for l in HISTORIQUE.read_text(encoding="utf-8")
+            .splitlines() if l.strip()]
+
+
+def stats_modele(rapport: dict, cle: str) -> dict:
+    return rapport.get("modeles", {}).get(cle, {})
+
+
+def vide(message: str) -> None:
+    st.markdown(
+        f'<div style="border:1px dashed {DIM}55;border-radius:6px;padding:2rem;'
+        f'text-align:center;color:{DIM}">{message}</div>', unsafe_allow_html=True)
+
+
+def libelle_run(run_id: str) -> str:
+    """Libellé lisible : 'run_id · période · fichier source'."""
+    try:
+        r = charger_rapport(run_id)
+        per = r.get("periode") or {}
+        morceaux = [run_id]
+        if per.get("debut"):
+            morceaux.append(f"{per['debut']} → {per['fin']}")
+        if r.get("source"):
+            morceaux.append(r["source"])
+        return "  ·  ".join(morceaux)
+    except Exception:
+        return run_id
+
+
+def runs_en_cours() -> list[dict]:
+    """Runs avec progression < 100 et sans rapport final."""
+    actifs = []
+    if not RUNS_DIR.exists():
+        return actifs
+    for d in RUNS_DIR.iterdir():
+        prog = d / "progression.json"
+        if prog.exists() and not (d / "rapport_run.json").exists():
+            try:
+                pj = json.loads(prog.read_text(encoding="utf-8"))
+                pj["run_id"] = d.name
+                actifs.append(pj)
+            except Exception:
+                pass
+    return sorted(actifs, key=lambda x: x["run_id"], reverse=True)
+
+
+def lancer_inference(fichier: Path, modeles: list[str] | None = None) -> None:
+    """Lance le run en arrière-plan (le dashboard reste réactif)."""
+    cmd = [sys.executable, str(ROOT / "scripts" / "run_inference.py"),
+           "--donnees", str(fichier)]
+    if modeles:
+        cmd += ["--modeles"] + modeles
+    kwargs = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = 0x00000208          # DETACHED | NEW_GROUP
+    else:
+        kwargs["start_new_session"] = True
+    subprocess.Popen(cmd, cwd=str(ROOT),
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     **kwargs)
+
+
+def fmt(n) -> str:
+    """Format milliers avec espaces (convention FR)."""
+    try:
+        return f"{int(n):,}".replace(",", " ")
+    except (TypeError, ValueError):
+        return str(n)
+
+
+# ═══════════ éléments communs aux deux pages (sidebar) ═══════════
+with st.sidebar:
+    if LOGO.exists():
+        st.image(str(LOGO), width=110)
+    st.markdown("### Orange Money\n**RA&FM — Pilotage ML**")
+    _actifs = runs_en_cours()
+    if _actifs:
+        st.markdown(badge(f"run en cours · {_actifs[0].get('pct', 0)} %", "brand"),
+                    unsafe_allow_html=True)
+    st.markdown("---")
+
+# état global de la page consultation (défini par page_dashboard)
+run_id, rapport, ok, ko, drift_v = None, {}, [], [], "n/a"
+
+
+def page_dashboard():
+    """Onglet 1 — consultation des résultats (analystes)."""
+    global run_id, rapport, ok, ko, drift_v
+
+    runs = lister_runs()
+    if not runs:
+        entete_vue("Tableau de bord", "Aucun run d'inférence disponible")
+        st.info("👋 Bienvenue. Pour commencer : ouvrir l'onglet "
+                "**⚙️ Données & Inférence** (barre latérale), déposer un fichier "
+                "et lancer le scoring. Les résultats apparaîtront ici.")
+        return
+
+    with st.sidebar:
+        run_id = st.selectbox("Run analysé", runs, index=0, format_func=libelle_run)
+        rapport = charger_rapport(run_id)
+        vue = st.radio("Vue", ["Synthèse"] + list(MODELES.values()),
+                       label_visibility="collapsed")
+        st.markdown("---")
+        ok, ko = rapport.get("modeles_ok", []), rapport.get("modeles_ko", [])
+        drift_v = (rapport.get("drift") or {}).get("verdict_global", "n/a")
+        st.markdown(
+            f"**Santé du système**<br>"
+            f"Modèles : {badge(f'{len(ok)}/5 OK', 'ok' if not ko else 'crit')}<br>"
+            f"Drift : {badge(drift_v, {'stable': 'ok', 'ATTENTION': 'warn'}.get(drift_v, 'crit') if drift_v != 'n/a' else 'info')}",
+            unsafe_allow_html=True)
+
+    VUES_CONSULTATION[vue]()
+
+
+# ════════════════════════ VUE SYNTHÈSE ════════════════════════
+def vue_synthese():
+    n_entree = next((s.get("n_entree") for s in rapport.get("modeles", {}).values()
+                     if s.get("n_entree")), None)
+    entete_vue(
+        "Synthèse du run",
+        f"Run {run_id}" + (f" · {fmt(n_entree)} transactions" if n_entree else "")
+        + f" · {rapport.get('duree_totale_s', '?')} s",
+        badge(f"{len(ok)}/5 modèles", "ok" if not ko else "crit")
+        + " " + badge(f"drift {drift_v}",
+                      {"stable": "ok", "ATTENTION": "warn"}.get(drift_v, "crit")
+                      if drift_v != "n/a" else "info"))
+
+    m1 = stats_modele(rapport, "m1_fraude")
+    m2 = stats_modele(rapport, "m2_mules")
+    m4 = stats_modele(rapport, "m4_commissions")
+    m6 = stats_modele(rapport, "m6_reconciliation")
+    total_alertes = sum(s.get("n_alertes", 0) for s in rapport.get("modeles", {}).values())
+
+    c = st.columns(5)
+    kpi(c[0], fmt(total_alertes), "alertes à traiter",
+        "tous modèles confondus", "crit" if total_alertes > 0 else "ok")
+    kpi(c[1], m1.get("n_alertes", "—"), "fraude (M1)",
+        f"budget {m1.get('budget_jour', '—')}/j" if m1 else "non exécuté")
+    kpi(c[2], m2.get("n_alertes", "—"), "mules (M2)",
+        f"{m2.get('n_clusters', '—')} réseaux" if m2 else "non exécuté")
+    kpi(c[3], m4.get("n_alertes", "—"), "commissions (M4)",
+        "" if m4 else "non exécuté")
+    kpi(c[4], f"{m6.get('taux_auto_pct', '—')} %", "réconciliation auto (M6)",
+        f"{fmt(m6.get('gain_heures', 0))} h gagnées" if m6 else "non exécuté", "ok")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    g, d = st.columns([3, 2])
+
+    with g:
+        st.markdown("##### Alertes par modèle")
+        donnees = [(MODELES.get(next((K for K in MODELES if K.lower() == k), k), k),
+                    v.get("n_alertes", 0))
+                   for k, v in rapport.get("modeles", {}).items()]
+        if donnees:
+            df = pd.DataFrame(donnees, columns=["Modèle", "Alertes"])
+            fig = px.bar(df, x="Alertes", y="Modèle", orientation="h", text="Alertes")
+            fig.update_traces(marker_color=ORANGE, textposition="auto")
+            st.plotly_chart(plotly_layout(fig, 290), use_container_width=True)
+
+    with d:
+        st.markdown("##### État des modèles")
+        ok_l = [m.lower() for m in ok]
+        ko_l = [m.lower() for m in ko]
+        lignes = []
+        for cle, nom in MODELES.items():
+            k = cle.lower()
+            statut = ("✅ OK" if k in ok_l else "❌ Échec" if k in ko_l
+                      else "— non exécuté")
+            lignes.append({"Modèle": nom, "Statut": statut})
+        st.dataframe(pd.DataFrame(lignes), hide_index=True, use_container_width=True)
+
+        if rapport.get("erreurs"):
+            for m, e in rapport["erreurs"].items():
+                st.error(f"**{m}** : {e[:140]}")
+
+    hist = charger_historique_runs()
+    if len(hist) > 1:
+        st.markdown("##### Historique des runs")
+        h = pd.DataFrame([{
+            "run": r["run_id"],
+            "alertes": sum(s.get("n_alertes", 0) for s in r.get("modeles", {}).values()),
+        } for r in hist[-30:]])
+        fig = go.Figure(go.Scatter(x=h["run"], y=h["alertes"], mode="lines+markers",
+                                   line=dict(color=ORANGE, width=2), marker=dict(size=7)))
+        st.plotly_chart(plotly_layout(fig, 250), use_container_width=True)
+
+
+# ════════════════════════ VUE M1 — FRAUDE ════════════════════════
+def vue_m1():
+    s = stats_modele(rapport, "m1_fraude")
+    entete_vue("Fraude transactionnelle — M1",
+               "Isolation Forest par groupe de pairs · budget d'alertes journalier",
+               badge("peer-group", "brand"))
+    if not s:
+        return vide("M1 n'a pas été exécuté dans ce run.")
+
+    c = st.columns(4)
+    kpi(c[0], fmt(s.get("n_alertes", 0)), "alertes",
+        f"{s.get('pct_alertes', 0)} % des transactions", "crit")
+    kpi(c[1], s.get("budget_jour", "—"), "budget / jour", "capacité analystes")
+    kpi(c[2], s.get("score_moyen_alertes", "—"), "score moyen", "des alertes émises")
+    kpi(c[3], f"{s.get('duree_s', '—')} s", "durée scoring")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    g, d = st.columns(2)
+    segments = s.get("segments", {})
+    if segments:
+        with g:
+            st.markdown("##### Transactions par segment (groupes de pairs)")
+            df = pd.DataFrame(list(segments.items()), columns=["Segment", "Transactions"])
+            fig = px.bar(df, x="Segment", y="Transactions", text="Transactions")
+            fig.update_traces(marker_color=MODERE)
+            st.plotly_chart(plotly_layout(fig, 300), use_container_width=True)
+
+    alertes = charger_alertes(run_id, "M1_fraude")
+    if alertes is not None and len(alertes):
+        if "SEGMENT" in alertes.columns:
+            with d:
+                st.markdown("##### Alertes par segment")
+                rep = alertes["SEGMENT"].value_counts().reset_index()
+                rep.columns = ["Segment", "Alertes"]
+                fig = px.bar(rep, x="Segment", y="Alertes", text="Alertes")
+                fig.update_traces(marker_color=ORANGE)
+                st.plotly_chart(plotly_layout(fig, 300), use_container_width=True)
+
+        st.markdown("##### File d'alertes priorisée")
+        st.caption("Triée par score de risque — chaque alerte porte sa raison.")
+        conf = {}
+        if "RISK_SCORE" in alertes.columns:
+            conf["RISK_SCORE"] = st.column_config.ProgressColumn(
+                "Risque", min_value=0, max_value=100, format="%.0f")
+        st.dataframe(alertes.head(300), hide_index=True, use_container_width=True,
+                     column_config=conf)
+        st.download_button("⬇ Exporter les alertes (CSV)",
+                           alertes.to_csv(index=False).encode("utf-8-sig"),
+                           f"M1_alertes_{run_id}.csv", "text/csv")
+    else:
+        vide("Aucune alerte M1 dans ce run.")
+
+
+# ════════════════════════ VUE M2 — MULES ════════════════════════
+def vue_m2():
+    s = stats_modele(rapport, "m2_mules")
+    entete_vue("Réseaux de mules — M2",
+               "Transit + PageRank + clustering · graphe des flux",
+               badge("graphe", "brand"))
+    if not s:
+        return vide("M2 n'a pas été exécuté dans ce run.")
+
+    c = st.columns(4)
+    kpi(c[0], s.get("n_alertes", 0), "comptes à investiguer", "budget mules", "crit")
+    kpi(c[1], s.get("n_clusters", 0), "réseaux organisés", "clusters DBSCAN", "warn")
+    kpi(c[2], fmt(s.get("n_transit", 0)), "comptes de transit")
+    kpi(c[3], fmt(s.get("n_aretes", 0)), "arêtes du graphe")
+
+    alertes = charger_alertes(run_id, "M2_mules")
+    if alertes is not None and len(alertes):
+        st.markdown("<br>", unsafe_allow_html=True)
+        g, d = st.columns(2)
+        with g:
+            st.markdown("##### Profil de transit (sources vs destinations)")
+            fig = px.scatter(alertes, x="in_degree", y="out_degree",
+                             size="RISK_SCORE", color="RISK_SCORE",
+                             color_continuous_scale=[MODERE, ELEVE, CRITIQUE],
+                             hover_data=["node", "ratio_transit"])
+            fig.update_layout(coloraxis_showscale=False)
+            st.plotly_chart(plotly_layout(fig, 320), use_container_width=True)
+        with d:
+            if "cluster" in alertes.columns and (alertes["cluster"] >= 0).any():
+                st.markdown("##### Taille des réseaux détectés")
+                t = alertes[alertes["cluster"] >= 0]["cluster"].value_counts() \
+                    .reset_index()
+                t.columns = ["Réseau", "Comptes"]
+                t["Réseau"] = t["Réseau"].astype(str)
+                fig = px.bar(t.head(15), x="Comptes", y="Réseau", orientation="h",
+                             text="Comptes")
+                fig.update_traces(marker_color=ORANGE)
+                st.plotly_chart(plotly_layout(fig, 320), use_container_width=True)
+
+        st.markdown("##### Comptes mules suspects")
+        conf = {}
+        if "RISK_SCORE" in alertes.columns:
+            conf["RISK_SCORE"] = st.column_config.ProgressColumn(
+                "Risque", min_value=0, max_value=100, format="%.0f")
+        st.dataframe(alertes.head(300), hide_index=True, use_container_width=True,
+                     column_config=conf)
+        st.download_button("⬇ Exporter (CSV)",
+                           alertes.to_csv(index=False).encode("utf-8-sig"),
+                           f"M2_alertes_{run_id}.csv", "text/csv")
+    else:
+        vide("Aucune alerte M2 dans ce run.")
+
+
+# ════════════════════════ VUE M4 — COMMISSIONS ════════════════════
+def vue_m4():
+    s = stats_modele(rapport, "m4_commissions")
+    entete_vue("Anomalies commissions — M4",
+               "Z-score vs norme historique figée · agrégation jour × service",
+               badge("revenue assurance", "brand"))
+    if not s:
+        return vide("M4 n'a pas été exécuté dans ce run.")
+
+    inconnus = s.get("services_inconnus", [])
+    c = st.columns(3)
+    kpi(c[0], s.get("n_alertes", 0), "anomalies détectées", "", "warn")
+    kpi(c[1], s.get("n_jours_services", 0), "couples jour × service analysés")
+    kpi(c[2], len(inconnus), "services hors référence",
+        ", ".join(map(str, inconnus[:3])) + ("…" if len(inconnus) > 3 else ""),
+        "warn" if inconnus else "ok")
+
+    alertes = charger_alertes(run_id, "M4_commissions")
+    if alertes is not None and len(alertes):
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("##### Déviations par jour et service")
+        fig = px.scatter(alertes, x="jour", y="z_score", color="service",
+                         size="volume", hover_data=["metrique", "valeur", "reference"])
+        fig.add_hline(y=3, line_dash="dot", line_color=ELEVE)
+        fig.add_hline(y=-3, line_dash="dot", line_color=ELEVE)
+        st.plotly_chart(plotly_layout(fig, 330), use_container_width=True)
+
+        st.markdown("##### Détail des anomalies")
+        st.dataframe(alertes, hide_index=True, use_container_width=True)
+        st.download_button("⬇ Exporter (CSV)",
+                           alertes.to_csv(index=False).encode("utf-8-sig"),
+                           f"M4_alertes_{run_id}.csv", "text/csv")
+    else:
+        vide("Aucune anomalie de commission — facturation conforme à la norme.")
+
+
+# ════════════════════════ VUE M5 — ÉCHEC ════════════════════════
+def vue_m5():
+    s = stats_modele(rapport, "m5_echec")
+    entete_vue("Prédiction d'échec — M5",
+               "LightGBM supervisé · ROC-AUC 0.96 (validation temporelle)",
+               badge("supervisé", "brand"))
+    if not s:
+        return vide("M5 n'a pas été exécuté dans ce run "
+                    "(nécessite le feature engineering — lancer sur la VM).")
+
+    c = st.columns(4)
+    kpi(c[0], fmt(s.get("n_alertes", 0)), "transactions à risque",
+        f"proba ≥ {s.get('seuil', 0.8)}", "warn")
+    kpi(c[1], f"{s.get('pct_alertes', 0)} %", "part du volume")
+    kpi(c[2], s.get("proba_moyenne", "—"), "probabilité moyenne", "tout le lot")
+    kpi(c[3], f"{s.get('duree_s', '—')} s", "durée scoring")
+
+    scores = charger_scores(run_id, "M5_echec")
+    if scores is not None and "proba_echec" in scores.columns:
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("##### Distribution des probabilités d'échec")
+        ech = scores["proba_echec"].sample(min(len(scores), 100_000), random_state=1)
+        fig = px.histogram(ech, nbins=50)
+        fig.update_traces(marker_color=MODERE)
+        fig.add_vline(x=s.get("seuil", 0.8), line_color=CRITIQUE, line_dash="dash",
+                      annotation_text="seuil d'alerte")
+        fig.update_layout(showlegend=False, yaxis_type="log")
+        st.plotly_chart(plotly_layout(fig, 320), use_container_width=True)
+
+    alertes = charger_alertes(run_id, "M5_echec")
+    if alertes is not None and len(alertes):
+        st.markdown("##### Transactions à plus fort risque d'échec")
+        st.dataframe(alertes.head(300), hide_index=True, use_container_width=True)
+        st.download_button("⬇ Exporter (CSV)",
+                           alertes.to_csv(index=False).encode("utf-8-sig"),
+                           f"M5_alertes_{run_id}.csv", "text/csv")
+
+
+# ════════════════════════ VUE M6 — RÉCONCILIATION ═══════════════
+def vue_m6():
+    s = stats_modele(rapport, "m6_reconciliation")
+    entete_vue("Réconciliation — M6",
+               "Record linkage (blocking + parties) · précision 86,6 % validée",
+               badge("record linkage", "brand"))
+    if not s:
+        return vide("M6 n'a pas été exécuté dans ce run.")
+
+    c = st.columns(4)
+    kpi(c[0], f"{s.get('taux_auto_pct', 0)} %", "réconciliation automatique",
+        f"{fmt(s.get('n_auto_fiable', 0))} appariements fiables", "ok")
+    kpi(c[1], fmt(s.get("n_suggestion", 0)), "suggestions à valider", "file analyste",
+        "warn")
+    kpi(c[2], fmt(s.get("n_manuel", 0)), "cas manuels", "sans candidat")
+    kpi(c[3], f"{fmt(s.get('gain_heures', 0))} h", "gain analyste estimé",
+        "3 min / cas évité", "ok")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    g, d = st.columns([2, 3])
+    with g:
+        st.markdown("##### Répartition du traitement")
+        rep = pd.DataFrame({
+            "Catégorie": ["Automatique fiable", "Suggestion analyste", "Manuel"],
+            "Volume": [s.get("n_auto_fiable", 0), s.get("n_suggestion", 0),
+                       s.get("n_manuel", 0)]})
+        fig = px.pie(rep, names="Catégorie", values="Volume", hole=0.62,
+                     color="Catégorie",
+                     color_discrete_map={"Automatique fiable": NORMAL,
+                                         "Suggestion analyste": ELEVE,
+                                         "Manuel": CRITIQUE})
+        fig.update_traces(textinfo="percent")
+        st.plotly_chart(plotly_layout(fig, 320), use_container_width=True)
+
+    with d:
+        alertes = charger_alertes(run_id, "M6_reconciliation")
+        st.markdown("##### Suggestions d'appariement (à valider)")
+        if alertes is not None and len(alertes):
+            st.dataframe(alertes.head(300), hide_index=True, use_container_width=True)
+            st.download_button("⬇ Exporter (CSV)",
+                               alertes.to_csv(index=False).encode("utf-8-sig"),
+                               f"M6_suggestions_{run_id}.csv", "text/csv")
+        else:
+            vide("Aucune suggestion — tout est apparié automatiquement ou manuel.")
+
+
+# ═══════════ Onglet 2 — administration (opérateur) ═══════════
+def page_donnees():
+    entete_vue("Données & Inférence",
+               "Déposer un fichier, lancer le scoring, suivre l'avancement",
+               badge("pilotage", "brand"))
+
+    # ── A. run(s) en cours : progression + temps restant ──
+    actifs = runs_en_cours()
+    if actifs:
+        a = actifs[0]
+        st.markdown("##### ⏱ Inférence en cours")
+        pct = max(int(a.get("pct", 0)), 1)
+        debut = datetime.strptime(a["run_id"], "%Y%m%d_%H%M%S")
+        ecoule = (datetime.now() - debut).total_seconds()
+        restant = ecoule / pct * (100 - pct)
+        c = st.columns(4)
+        kpi(c[0], f"{pct} %", "avancement", f"étape : {a.get('etape', '?')}", "warn")
+        kpi(c[1], f"{ecoule/60:.0f} min", "temps écoulé")
+        kpi(c[2], f"~{restant/60:.0f} min", "temps restant estimé",
+            "affiné en cours de run")
+        kpi(c[3], a["run_id"], "identifiant du run")
+        st.progress(pct / 100)
+        st.caption("La page s'actualise automatiquement toutes les 10 s. "
+                   "Le run apparaîtra dans le sélecteur une fois terminé.")
+        time.sleep(10)
+        st.cache_data.clear()
+        st.rerun()
+
+    # ── B. déposer un nouveau fichier ──
+    st.markdown("##### 1 · Déposer un fichier (CSV ou Parquet)")
+    up = st.file_uploader("Export DWH mensuel", type=["csv", "parquet"],
+                          help="Jusqu'à 4 Go via le navigateur. Au-delà, déposer "
+                               "le fichier directement dans data/raw/ (SFTP) : "
+                               "il apparaîtra dans la liste ci-dessous.")
+    if up is not None:
+        dest = ROOT / "data" / "raw" / up.name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.exists():
+            st.info(f"{up.name} existe déjà — il sera utilisé tel quel.")
+        else:
+            with st.spinner(f"Enregistrement de {up.name}..."):
+                with open(dest, "wb") as f:
+                    f.write(up.getbuffer())
+            st.success(f"✅ {up.name} enregistré dans data/raw/")
+            st.cache_data.clear()
+
+    # ── C. choisir un fichier et lancer ──
+    st.markdown("##### 2 · Choisir le fichier à scorer")
+    fichiers = []
+    for dossier in (ROOT / "data" / "raw", ROOT / "data" / "processed"):
+        if dossier.exists():
+            fichiers += [f for f in dossier.iterdir()
+                         if f.suffix in (".csv", ".parquet")]
+    if not fichiers:
+        vide("Aucun fichier dans data/raw/ ni data/processed/.")
+        return
+    fichiers = sorted(fichiers, key=lambda f: f.stat().st_mtime, reverse=True)
+    libelles = {f"{f.name}  ·  {f.stat().st_size/1e9:.2f} Go  ·  "
+                f"{datetime.fromtimestamp(f.stat().st_mtime):%d/%m/%Y %H:%M}": f
+                for f in fichiers}
+    choix = st.selectbox("Fichier", list(libelles))
+    fichier = libelles[choix]
+
+    sous = st.multiselect(
+        "Modèles à exécuter (vide = les 5)",
+        list(MODELES.keys()),
+        format_func=lambda k: MODELES[k].lower().replace("_", " "),
+        help="M1 et M5 déclenchent le feature engineering complet (long sur "
+             "très gros fichiers).")
+    sous_cles = [s.lower() for s in sous] if sous else None
+
+    st.markdown("##### 3 · Lancer")
+    if st.button("🚀 Lancer l'inférence", type="primary", disabled=bool(actifs)):
+        lancer_inference(fichier, sous_cles)
+        st.success(f"Inférence lancée sur **{fichier.name}** — suivi ci-dessus.")
+        time.sleep(2)
+        st.rerun()
+
+    # ── D. historique des fichiers déjà scorés ──
+    runs_l = lister_runs()
+    if runs_l:
+        st.markdown("##### Fichiers déjà analysés")
+        lignes = []
+        for rid in runs_l[:15]:
+            try:
+                r = charger_rapport(rid)
+                per = r.get("periode") or {}
+                lignes.append({
+                    "Run": rid, "Fichier": r.get("source", "—"),
+                    "Période données": f"{per.get('debut','?')} → {per.get('fin','?')}",
+                    "Transactions": fmt(r.get("n_transactions", "—")),
+                    "Statut": "✅" if not r.get("modeles_ko") else "⚠️ partiel",
+                })
+            except Exception:
+                pass
+        st.dataframe(pd.DataFrame(lignes), hide_index=True, use_container_width=True)
+        st.caption("Pour consulter une période : sélectionner son run dans la "
+                   "barre latérale, puis naviguer dans les vues.")
+
+
+# ════════════════════════ navigation ════════════════════════
+VUES_CONSULTATION = {
+    "Synthèse": vue_synthese,
+    MODELES["M1_fraude"]: vue_m1, MODELES["M2_mules"]: vue_m2,
+    MODELES["M4_commissions"]: vue_m4, MODELES["M5_echec"]: vue_m5,
+    MODELES["M6_reconciliation"]: vue_m6,
+}
+
+pg = st.navigation([
+    st.Page(page_dashboard, title="Tableau de bord", icon="📊", default=True),
+    st.Page(page_donnees, title="Données & Inférence", icon="⚙️"),
+])
+pg.run()

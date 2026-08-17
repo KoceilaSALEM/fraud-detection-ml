@@ -1,0 +1,14 @@
+{
+  "n_alertes": 6202,
+  "pct_alertes": 0.0244,
+  "budget_jour": 200,
+  "segments": {
+    "moyen": 10209253,
+    "eleve": 7845186,
+    "technique": 4803242,
+    "faible": 2598786
+  },
+  "score_moyen_alertes": 99.3,
+  "duree_s": 233.7,
+  "n_entree": 25456467
+}

@@ -1,0 +1,25 @@
+{
+  "modele": "M1_fraude",
+  "latest": "2026-06-11_v1",
+  "versions": [
+    {
+      "tag": "2026-06-11_v1",
+      "date_publication": "2026-06-11T14:58:53",
+      "metriques": {},
+      "fichiers": [
+        "iforest.pkl",
+        "iforest_eleve.pkl",
+        "iforest_faible.pkl",
+        "iforest_moyen.pkl",
+        "iforest_technique.pkl",
+        "params.json",
+        "params_v2.json",
+        "scaler.pkl",
+        "scaler_eleve.pkl",
+        "scaler_faible.pkl",
+        "scaler_moyen.pkl",
+        "scaler_technique.pkl"
+      ]
+    }
+  ]
+}

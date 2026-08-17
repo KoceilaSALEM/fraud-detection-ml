@@ -49,7 +49,8 @@ def main():
     df = charger_donnees(chemin)
 
     pipeline = PipelineInference(ROOT)
-    rapport = pipeline.executer(df, modeles=args.modeles, version=args.version)
+    rapport = pipeline.executer(df, modeles=args.modeles, version=args.version,
+                                source=chemin.name)
 
     print("\n" + "=" * 60)
     print(f"RUN {rapport['run_id']} — {rapport['duree_totale_s']}s")

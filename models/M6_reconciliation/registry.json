@@ -1,0 +1,14 @@
+{
+  "modele": "M6_reconciliation",
+  "latest": "2026-06-11_v1",
+  "versions": [
+    {
+      "tag": "2026-06-11_v1",
+      "date_publication": "2026-06-11T09:27:49",
+      "metriques": {},
+      "fichiers": [
+        "params_v3.json"
+      ]
+    }
+  ]
+}

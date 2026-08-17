@@ -1,0 +1,541 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pandas as pd
+import streamlit as st
+import streamlit.components.v1 as components
+
+# ─────────────────────────────────────────────────────────────────────────
+#  Charte Orange
+# ─────────────────────────────────────────────────────────────────────────
+ORANGE      = "#FF7900"
+BG_DARK     = "#0E1117"
+GRID_DARK   = "#1C2028"
+
+# Couleurs des nœuds par niveau de risque (cohérent avec RISK_LEVEL de M2)
+COLOR_CRITIQUE = "#E63946"   # rouge — mule confirmée / score très élevé
+COLOR_ELEVE    = ORANGE      # orange Orange — suspect fort
+COLOR_MODERE   = "#F1C40F"   # jaune — à surveiller
+COLOR_FAIBLE   = "#5A6472"   # gris — bruit / transit peu risqué
+COLOR_EXTERNE  = "#2C333F"   # gris foncé — contrepartie hors réseau (contexte)
+
+# ─────────────────────────────────────────────────────────────────────────
+#  Résolution défensive des noms de colonnes de edges.parquet
+#  (on ne suppose pas le schéma : on le détecte)
+# ─────────────────────────────────────────────────────────────────────────
+_SRC_CANDIDATES = ["source", "src", "sender", "SENDER", "SENDER_ID", "from",
+                   "emetteur", "EMETTEUR", "payer", "node_from", "u", "start"]
+_DST_CANDIDATES = ["target", "dst", "receiver", "RECEIVER", "RECEIVER_ID", "to",
+                   "destinataire", "DESTINATAIRE", "payee", "node_to", "v", "end"]
+_AMT_CANDIDATES = ["montant", "amount", "MONTANT", "AMOUNT", "montant_total",
+                   "sum_montant", "poids", "weight_montant", "value"]
+_CNT_CANDIDATES = ["count", "nb", "n", "nb_tx", "transactions", "freq",
+                   "weight", "poids", "n_tx"]
+
+
+def _resolve_col(cols, candidates):
+    """Retourne le premier nom de colonne trouvé (insensible à la casse)."""
+    lower = {c.lower(): c for c in cols}
+    for cand in candidates:
+        if cand in cols:
+            return cand
+        if cand.lower() in lower:
+            return lower[cand.lower()]
+    return None
+
+
+def _first_existing(directory: Path, candidates):
+    """Retourne le premier fichier existant parmi une liste de noms."""
+    for name in candidates:
+        p = directory / name
+        if p.exists():
+            return p
+    return None
+
+
+# ─────────────────────────────────────────────────────────────────────────
+#  Chargement des exports M2 (mis en cache)
+# ─────────────────────────────────────────────────────────────────────────
+@st.cache_data(show_spinner=False)
+def load_m2(outputs_dir: str):
+    """Charge scored + edges. Renvoie (scored, edges, meta).
+
+    Les noms de fichiers sont résolus automatiquement pour couvrir les
+    conventions rencontrées : scored_v2.parquet / scored.parquet et
+    edges_graph.parquet / edges.parquet.
+    """
+    outputs_dir = Path(outputs_dir)
+
+    # Résolution du fichier des comptes scorés
+    scored_path = _first_existing(
+        outputs_dir,
+        ["scored_v2.parquet", "scored.parquet", "scored_mules.parquet"],
+    )
+    # Résolution du fichier des arêtes (le graph export, pas le checkpoint brut)
+    edges_path = _first_existing(
+        outputs_dir,
+        ["edges_graph.parquet", "edges.parquet", "edges_transit.parquet"],
+    )
+
+    if scored_path is None:
+        return None, None, {"error":
+            f"Aucun fichier de comptes scorés trouvé dans {outputs_dir} "
+            "(cherché : scored_v2.parquet, scored.parquet)."}
+    if edges_path is None:
+        return None, None, {"error":
+            f"Aucun fichier d'arêtes trouvé dans {outputs_dir} "
+            "(cherché : edges_graph.parquet, edges.parquet)."}
+
+    scored = pd.read_parquet(scored_path)
+    edges  = pd.read_parquet(edges_path)
+
+    # Le compte est identifié par 'node' dans scored.parquet
+    if "node" not in scored.columns:
+        return None, None, {"error": "Colonne 'node' absente de scored.parquet"}
+
+    src = _resolve_col(edges.columns, _SRC_CANDIDATES)
+    dst = _resolve_col(edges.columns, _DST_CANDIDATES)
+    amt = _resolve_col(edges.columns, _AMT_CANDIDATES)
+    cnt = _resolve_col(edges.columns, _CNT_CANDIDATES)
+
+    meta = {
+        "src": src, "dst": dst, "amt": amt, "cnt": cnt,
+        "edge_cols": list(edges.columns),
+        "scored_cols": list(scored.columns),
+        "scored_file": scored_path.name,
+        "edges_file": edges_path.name,
+        "error": None,
+    }
+    if src is None or dst is None:
+        meta["error"] = (
+            "Impossible d'identifier les colonnes source/destination dans "
+            f"edges.parquet. Colonnes présentes : {list(edges.columns)}"
+        )
+
+    # Normalisation des types : ID de compte en str pour matcher le graphe
+    scored = scored.copy()
+    scored["node"] = scored["node"].astype(str)
+    if src and dst:
+        edges = edges.copy()
+        edges[src] = edges[src].astype(str)
+        edges[dst] = edges[dst].astype(str)
+
+    return scored, edges, meta
+
+
+# ─────────────────────────────────────────────────────────────────────────
+#  Helpers de formatage / style
+# ─────────────────────────────────────────────────────────────────────────
+def _node_color(risk_level, risk_score):
+    """Couleur d'un nœud selon RISK_LEVEL (fallback sur RISK_SCORE)."""
+    lvl = str(risk_level).upper() if risk_level is not None else ""
+    if "CRITIQUE" in lvl:
+        return COLOR_CRITIQUE
+    if "ÉLEV" in lvl or "ELEV" in lvl or "HIGH" in lvl:
+        return COLOR_ELEVE
+    if "MODÉR" in lvl or "MODER" in lvl or "MEDIUM" in lvl:
+        return COLOR_MODERE
+    if "FAIBLE" in lvl or "LOW" in lvl:
+        return COLOR_FAIBLE
+    # fallback numérique
+    try:
+        s = float(risk_score)
+        if s >= 85:  return COLOR_CRITIQUE
+        if s >= 70:  return COLOR_ELEVE
+        if s >= 50:  return COLOR_MODERE
+        return COLOR_FAIBLE
+    except (TypeError, ValueError):
+        return COLOR_FAIBLE
+
+
+def _fmt_mga(x):
+    """Formate un montant MGA avec séparateurs de milliers."""
+    try:
+        return f"{float(x):,.0f} Ar".replace(",", " ")
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _node_tooltip(row):
+    """Construit l'infobulle HTML d'un nœud (survol)."""
+    def g(col, default="—"):
+        v = row.get(col, default)
+        return default if pd.isna(v) else v
+
+    lines = [f"<b>ID {g('node')}</b>"]
+    if "RISK_SCORE" in row:
+        lines.append(f"Risque : <b>{g('RISK_SCORE')}</b> ({g('RISK_LEVEL')})")
+    if "in_degree" in row or "out_degree" in row:
+        lines.append(f"Entrant : {g('in_degree')} — Sortant : {g('out_degree')}")
+    if "in_montant" in row or "out_montant" in row:
+        lines.append(f"Reçu : {_fmt_mga(g('in_montant'))}")
+        lines.append(f"Envoyé : {_fmt_mga(g('out_montant'))}")
+    if "ratio_transit" in row:
+        try:
+            lines.append(f"Ratio transit : {float(g('ratio_transit')):.2f}")
+        except (TypeError, ValueError):
+            pass
+    if "pagerank" in row:
+        try:
+            lines.append(f"PageRank : {float(g('pagerank')):.4f}")
+        except (TypeError, ValueError):
+            pass
+    return "<br>".join(str(x) for x in lines)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+#  Construction du sous-graphe pour un cluster donné
+# ─────────────────────────────────────────────────────────────────────────
+def _subgraph_frames(scored, edges, meta, cluster_id, include_external, max_nodes):
+    """
+    Renvoie (nodes_df, edges_df, truncated) pour le réseau sélectionné.
+    - nodes_df : lignes de scored du cluster (+ contreparties externes si demandé)
+    - edges_df : arêtes filtrées, avec colonnes normalisées src/dst/amt/cnt
+    """
+    src, dst = meta["src"], meta["dst"]
+    amt, cnt = meta["amt"], meta["cnt"]
+
+    core_ids = set(scored.loc[scored["cluster"] == cluster_id, "node"])
+
+    if include_external:
+        # arêtes touchant au moins un nœud du cluster
+        mask = edges[src].isin(core_ids) | edges[dst].isin(core_ids)
+    else:
+        # arêtes strictement internes au cluster
+        mask = edges[src].isin(core_ids) & edges[dst].isin(core_ids)
+    e = edges.loc[mask].copy()
+
+    # Ensemble complet des nœuds impliqués
+    involved = set(e[src]) | set(e[dst]) | core_ids
+
+    # Garde-fou volume : on borne le nombre de nœuds affichés
+    truncated = False
+    if len(involved) > max_nodes:
+        truncated = True
+        # priorité aux nœuds du cluster les plus risqués, puis aux externes
+        core_scored = scored[scored["node"].isin(core_ids)].copy()
+        if "RISK_SCORE" in core_scored.columns:
+            core_scored = core_scored.sort_values("RISK_SCORE", ascending=False)
+        keep = list(core_scored["node"].head(max_nodes))
+        keep_set = set(keep)
+        # complète avec des externes très connectés si de la place reste
+        if include_external and len(keep_set) < max_nodes:
+            deg = pd.concat([e[src], e[dst]]).value_counts()
+            for nid in deg.index:
+                if nid not in keep_set:
+                    keep_set.add(nid)
+                    if len(keep_set) >= max_nodes:
+                        break
+        involved = keep_set
+        e = e[e[src].isin(involved) & e[dst].isin(involved)].copy()
+
+    # Table des nœuds : on récupère les infos scored quand elles existent
+    nodes_df = scored[scored["node"].isin(involved)].copy()
+    # nœuds externes absents de scored (contreparties non « transit »)
+    known = set(nodes_df["node"])
+    externals = [n for n in involved if n not in known]
+    if externals:
+        ext_df = pd.DataFrame({"node": externals})
+        ext_df["_external"] = True
+        nodes_df["_external"] = False
+        nodes_df = pd.concat([nodes_df, ext_df], ignore_index=True)
+    else:
+        nodes_df["_external"] = False
+
+    # Normalisation des colonnes d'arêtes
+    e = e.rename(columns={src: "_src", dst: "_dst"})
+    e["_amt"] = e[amt] if amt else 0
+    e["_cnt"] = e[cnt] if cnt else 1
+
+    return nodes_df.reset_index(drop=True), e.reset_index(drop=True), truncated
+# ─────────────────────────────────────────────────────────────────────────
+#  Vue 1 — Graphe interactif (pyvis)
+# ─────────────────────────────────────────────────────────────────────────
+def build_pyvis_html(nodes_df, edges_df, height_px=650):
+    """Construit le HTML vis.js du sous-graphe."""
+    from pyvis.network import Network
+
+    net = Network(
+        height=f"{height_px}px", width="100%",
+        directed=True, bgcolor=BG_DARK, font_color="white",
+        notebook=False, cdn_resources="in_line",
+    )
+
+    # Degrés (pour la taille des nœuds) calculés sur les arêtes affichées
+    deg = (pd.concat([edges_df["_src"], edges_df["_dst"]])
+           .value_counts().to_dict())
+
+    for _, r in nodes_df.iterrows():
+        nid = str(r["node"])
+        d = deg.get(nid, 1)
+        size = 12 + min(d, 40) * 1.4          # borne la taille des hubs
+        if r.get("_external", False):
+            color = COLOR_EXTERNE
+            title = f"<b>ID {nid}</b><br>Contrepartie externe au réseau"
+            border = GRID_DARK
+        else:
+            color = _node_color(r.get("RISK_LEVEL"), r.get("RISK_SCORE"))
+            title = _node_tooltip(r)
+            border = "#FFFFFF"
+        net.add_node(
+            nid, label=nid, title=title, color=color, size=size,
+            borderWidth=2, borderWidthSelected=4,
+            font={"color": "#FFFFFF", "size": 13, "face": "Helvetica"},
+        )
+
+    # Épaisseur d'arête ∝ log(montant) pour lisser les écarts d'échelle
+    amax = edges_df["_amt"].astype(float).max() if len(edges_df) else 0
+    for _, e in edges_df.iterrows():
+        try:
+            a = float(e["_amt"])
+        except (TypeError, ValueError):
+            a = 0.0
+        width = 1.0
+        if amax and a > 0:
+            import math
+            width = 1.0 + 5.0 * (math.log1p(a) / math.log1p(amax))
+        label_amt = _fmt_mga(a) if a > 0 else ""
+        net.add_edge(
+            str(e["_src"]), str(e["_dst"]),
+            value=width, title=label_amt, color="#7A8391",
+        )
+
+    # Options vis.js : thème sombre, flèches, physique stabilisée, navigation
+    options = {
+        "nodes": {"shape": "dot", "borderWidth": 2},
+        "edges": {
+            "arrows": {"to": {"enabled": True, "scaleFactor": 0.7}},
+            "color": {"color": "#7A8391", "highlight": ORANGE, "hover": ORANGE},
+            "smooth": {"type": "dynamic"},
+        },
+        "physics": {
+            "barnesHut": {
+                "gravitationalConstant": -12000,
+                "springLength": 130,
+                "springConstant": 0.04,
+                "damping": 0.09,
+            },
+            "stabilization": {"iterations": 180, "fit": True},
+            "minVelocity": 0.5,
+        },
+        "interaction": {
+            "hover": True, "tooltipDelay": 100,
+            "navigationButtons": True, "keyboard": True,
+            "multiselect": True,
+        },
+    }
+    net.set_options(json.dumps(options))
+
+    # Génération robuste du HTML (compatible pyvis 0.3.x)
+    try:
+        return net.generate_html(notebook=False)
+    except TypeError:
+        return net.generate_html()
+
+
+# ─────────────────────────────────────────────────────────────────────────
+#  Vue 2 — Arbre hiérarchique (graphviz DOT, rendu client par st.graphviz_chart)
+# ─────────────────────────────────────────────────────────────────────────
+def build_graphviz_dot(nodes_df, edges_df, show_amounts=True):
+    """Construit une chaîne DOT (aucune dépendance système : rendu navigateur)."""
+    info = {str(r["node"]): r for _, r in nodes_df.iterrows()}
+
+    lines = [
+        "digraph reseau {",
+        "  rankdir=LR;",
+        '  bgcolor="transparent";',
+        '  node [style="filled", fontname="Helvetica", fontcolor="white", '
+        'color="#FFFFFF", penwidth=1.5];',
+        '  edge [color="#7A8391", fontname="Helvetica", fontcolor="#AAB2BD", '
+        'fontsize=9, penwidth=1.2];',
+    ]
+
+    for nid, r in info.items():
+        if r.get("_external", False):
+            fill = COLOR_EXTERNE
+            lbl = nid
+        else:
+            fill = _node_color(r.get("RISK_LEVEL"), r.get("RISK_SCORE"))
+            score = r.get("RISK_SCORE", "")
+            lbl = f"{nid}\\n({score})" if str(score) not in ("", "nan") else nid
+        lines.append(f'  "{nid}" [fillcolor="{fill}", label="{lbl}"];')
+
+    for _, e in edges_df.iterrows():
+        s, d = str(e["_src"]), str(e["_dst"])
+        if show_amounts and float(e.get("_amt", 0) or 0) > 0:
+            lines.append(f'  "{s}" -> "{d}" [label="{_fmt_mga(e["_amt"])}"];')
+        else:
+            lines.append(f'  "{s}" -> "{d}";')
+
+    lines.append("}")
+    return "\n".join(lines)
+# ─────────────────────────────────────────────────────────────────────────
+#  Légende
+# ─────────────────────────────────────────────────────────────────────────
+def _legend():
+    st.markdown(
+        f"""
+        <div style="display:flex; gap:18px; flex-wrap:wrap; font-size:0.82rem;
+                    color:#AAB2BD; margin:4px 0 10px 0;">
+          <span><span style="color:{COLOR_CRITIQUE};">●</span> Critique</span>
+          <span><span style="color:{COLOR_ELEVE};">●</span> Élevé</span>
+          <span><span style="color:{COLOR_MODERE};">●</span> Modéré</span>
+          <span><span style="color:{COLOR_FAIBLE};">●</span> Faible</span>
+          <span><span style="color:{COLOR_EXTERNE};">●</span> Contrepartie externe</span>
+          <span>→ sens du transfert &nbsp;·&nbsp; épaisseur ∝ montant</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────
+#  Point d'entrée : à appeler dans la page « Network Intelligence »
+# ─────────────────────────────────────────────────────────────────────────
+def render_network_intelligence(outputs_dir="outputs/M2_mules", key="m2net"):
+    """
+    Rend la vue réseau complète de M2.
+
+    Paramètres
+    ----------
+    outputs_dir : chemin du dossier d'exports M2 (contient scored.parquet
+                  et edges.parquet).
+    key         : préfixe des clés de widgets (utile si la page en contient
+                  d'autres).
+    """
+    st.subheader("Réseaux de mules — exploration du graphe")
+
+    scored, edges, meta = load_m2(str(outputs_dir))
+
+    if meta.get("error"):
+        st.error(meta["error"])
+        with st.expander("Détails techniques"):
+            st.write(meta)
+        return
+
+    # Diagnostic discret des fichiers et colonnes détectés (repliable)
+    with st.expander("Fichiers et colonnes détectés", expanded=False):
+        st.write({
+            "fichier_comptes": meta["scored_file"],
+            "fichier_aretes": meta["edges_file"],
+            "source": meta["src"], "destination": meta["dst"],
+            "montant": meta["amt"], "nb_transactions": meta["cnt"],
+            "toutes_colonnes_aretes": meta["edge_cols"],
+        })
+
+    # ── KPIs ──
+    n_clusters = int(scored.loc[scored["cluster"] >= 0, "cluster"].nunique())
+    n_transit = len(scored)
+    n_alertes = int((scored.get("RISK_SCORE", pd.Series(dtype=float)) >= 70).sum())
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Réseaux organisés", f"{n_clusters}")
+    c2.metric("Comptes de transit", f"{n_transit:,}".replace(",", " "))
+    c3.metric("Alertes (score ≥ 70)", f"{n_alertes:,}".replace(",", " "))
+
+    # ── Sélecteur de réseau ──
+    clusters = (scored[scored["cluster"] >= 0]
+                .groupby("cluster")
+                .agg(taille=("node", "size"),
+                     risque_moyen=("RISK_SCORE", "mean")
+                     if "RISK_SCORE" in scored.columns else ("node", "size"))
+                .sort_values("risque_moyen", ascending=False))
+
+    if clusters.empty:
+        st.warning("Aucun réseau organisé (cluster ≥ 0) dans scored.parquet.")
+        return
+
+    def _fmt_cluster(cid):
+        row = clusters.loc[cid]
+        rm = row["risque_moyen"]
+        rm_s = f"{rm:.0f}" if pd.notna(rm) else "—"
+        return f"Réseau #{cid} — {int(row['taille'])} comptes — risque moyen {rm_s}"
+
+    cluster_id = st.selectbox(
+        "Réseau à explorer",
+        options=list(clusters.index),
+        format_func=_fmt_cluster,
+        key=f"{key}_cluster",
+    )
+
+    colL, colR = st.columns([3, 2])
+    with colL:
+        include_external = st.checkbox(
+            "Inclure les contreparties externes (1 saut)",
+            value=False, key=f"{key}_ext",
+            help="Affiche aussi les comptes hors réseau qui envoient/reçoivent "
+                 "vers ce réseau (colorés en gris). Utile pour voir les sources "
+                 "d'alimentation et les points de sortie.",
+        )
+    with colR:
+        max_nodes = st.slider(
+            "Nœuds max affichés", min_value=20, max_value=400,
+            value=120, step=20, key=f"{key}_max",
+            help="Au-delà, on garde les comptes les plus risqués du réseau "
+                 "pour préserver la lisibilité.",
+        )
+
+    nodes_df, edges_df, truncated = _subgraph_frames(
+        scored, edges, meta, cluster_id, include_external, max_nodes
+    )
+
+    if truncated:
+        st.info(
+            f"Réseau volumineux : affichage limité aux {max_nodes} comptes les "
+            "plus risqués. Augmentez le curseur ou décochez les externes pour "
+            "réduire la densité."
+        )
+
+    if edges_df.empty:
+        st.warning("Aucune arête à afficher pour ce réseau avec ces filtres.")
+        return
+
+    _legend()
+
+    tab_graph, tab_tree, tab_data = st.tabs(
+        ["Graphe interactif", "Vue arbre", "Comptes du réseau"]
+    )
+
+    # ── Vue interactive pyvis ──
+    with tab_graph:
+        html = build_pyvis_html(nodes_df, edges_df, height_px=660)
+        components.html(html, height=680, scrolling=False)
+        st.caption(
+            f"{len(nodes_df)} nœuds · {len(edges_df)} liens · "
+            "glissez pour déplacer, molette pour zoomer, survolez un nœud "
+            "pour le détail, cliquez pour isoler ses connexions."
+        )
+
+    # ── Vue arbre graphviz ──
+    with tab_tree:
+        show_amounts = st.checkbox(
+            "Afficher les montants sur les flèches",
+            value=len(edges_df) <= 40, key=f"{key}_amt",
+        )
+        if len(edges_df) > 120:
+            st.info(
+                "Beaucoup d'arêtes : la vue arbre reste lisible mais dense. "
+                "Elle est surtout pertinente pour les petits réseaux "
+                "(source → relais → destination)."
+            )
+        dot = build_graphviz_dot(nodes_df, edges_df, show_amounts=show_amounts)
+        st.graphviz_chart(dot, use_container_width=True)
+
+    # ── Table des comptes ──
+    with tab_data:
+        display = nodes_df[nodes_df.get("_external", False) == False].copy()
+        cols_pref = [c for c in
+                     ["node", "RISK_SCORE", "RISK_LEVEL", "in_degree",
+                      "out_degree", "in_montant", "out_montant",
+                      "ratio_transit", "pagerank", "diversite"]
+                     if c in display.columns]
+        if "RISK_SCORE" in display.columns:
+            display = display.sort_values("RISK_SCORE", ascending=False)
+        q = st.text_input("Rechercher un ID", key=f"{key}_search")
+        if q:
+            display = display[display["node"].str.contains(q, case=False, na=False)]
+        st.dataframe(
+            display[cols_pref] if cols_pref else display,
+            use_container_width=True, hide_index=True,
+        )

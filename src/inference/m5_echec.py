@@ -47,7 +47,18 @@ class InferenceM5(BaseInference):
                 X[c] = pd.to_numeric(X[c], errors="coerce")
         X = X.astype("float32").fillna(X.median(numeric_only=True))
 
-        proba = self.artefacts["modele"].predict_proba(X)[:, 1]
+        try:
+            proba = self.artefacts["modele"].predict_proba(X)[:, 1]
+        except ValueError as e:
+            if "categorical" not in str(e):
+                raise
+            # Modèle entraîné avec des dtypes category (bug downcasting) :
+            # contourner via le booster bas niveau (numpy, pas de check dtypes).
+            # Correction définitive : réentraîner M5 avec features float32.
+            self.logger.warning(
+                "Modèle M5 entraîné avec des colonnes category -> prédiction via "
+                "booster (numpy). Réentraîner M5 en float32 pour corriger.")
+            proba = self.artefacts["modele"].booster_.predict(X.to_numpy())
         out = df[[c for c in [cfg.COL_TRANSFER_ID, cfg.COL_DATE, cfg.COL_SENDER_ID,
                               cfg.COL_MONTANT, cfg.COL_SERVICE] if c in df.columns]].copy()
         out["proba_echec"] = proba

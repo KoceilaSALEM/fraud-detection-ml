@@ -1,0 +1,15 @@
+{
+  "version": "v3 - blocking + parties sender/receiver",
+  "precision_reelle": 0.8663566518396953,
+  "rappel_reel": 0.857,
+  "taux_auto_fiable": 97.7837658407045,
+  "n_total": 102426,
+  "n_auto": 100156,
+  "n_suggestion": 1961,
+  "n_manuel": 309,
+  "gain_heures": 5007.8,
+  "complementaires": {
+    "TC": "CO",
+    "XX": "RC"
+  }
+}

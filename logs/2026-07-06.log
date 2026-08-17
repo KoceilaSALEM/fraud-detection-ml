@@ -1,0 +1,34 @@
+2026-07-06 08:14:43 | INFO    | cli.run_inference | Chargement : /home/koceila_salem_orange_com/ML/data/processed/OM_clean.parquet
+2026-07-06 08:14:57 | INFO    | pipeline | ═══ RUN 20260706_081457 ═══ 25,456,467 transactions
+2026-07-06 08:15:07 | INFO    | validation | ✓ Colonnes requises présentes (7)
+2026-07-06 08:15:07 | INFO    | validation | ✓ Volume : 25,456,467 transactions
+2026-07-06 08:15:07 | INFO    | validation | ✓ Montants numériques OK
+2026-07-06 08:15:07 | INFO    | validation | ✓ Dates parsables OK
+2026-07-06 08:15:07 | WARNING | validation | ⚠ 10,161 TRANSFER_ID dupliqués (dédoublonnage appliqué en aval)
+2026-07-06 08:15:08 | INFO    | monitoring.drift | PSI TRANSACTION_AMOUNT = 0.0000 [stable]
+2026-07-06 08:15:08 | INFO    | monitoring.drift | Verdict drift global : stable
+2026-07-06 08:15:08 | INFO    | pipeline | Modèles à exécuter : ['m1_fraude', 'm2_mules', 'm4_commissions', 'm5_echec', 'm6_reconciliation']
+2026-07-06 08:15:08 | INFO    | pipeline | Feature engineering (blocs A-D)...
+2026-07-06 08:32:54 | INFO    | pipeline | Features OK : 49 colonnes f_*
+2026-07-06 08:32:54 | INFO    | inference.M1_fraude | M1 chargé : 4 segments, 36 features
+2026-07-06 08:37:50 | INFO    | inference.M1_fraude | Scoring terminé : 6202 alertes en 295.7s
+2026-07-06 08:37:57 | INFO    | inference.M1_fraude | Exports : ['M1_fraude_alertes.csv', 'M1_fraude_scores.parquet', 'M1_fraude_stats.json']
+2026-07-06 08:37:57 | INFO    | monitoring.metrics | [m1_fraude] n_alertes=6202 | pct_alertes=0.0244 | budget_jour=200 | segments={'moyen': 10209253, 'eleve': 7845186, 'technique': 4803242, 'faible': 2598786} | score_moyen_alertes=99.3 | duree_s=295.7 | n_entree=25456467
+2026-07-06 08:37:57 | INFO    | inference.M2_mules | M2 chargé : scaler + params
+2026-07-06 08:38:58 | INFO    | inference.M2_mules | Scoring terminé : 500 alertes en 61.1s
+2026-07-06 08:38:59 | INFO    | inference.M2_mules | Exports : ['M2_mules_alertes.csv', 'M2_mules_scores.parquet', 'M2_mules_stats.json']
+2026-07-06 08:38:59 | INFO    | monitoring.metrics | [m2_mules] n_alertes=500 | n_transit=968026 | n_clusters=22 | n_aretes=6750838 | duree_s=61.1 | n_entree=25456467
+2026-07-06 08:38:59 | INFO    | inference.M4_commissions | M4 chargé : 13 services de référence
+2026-07-06 08:39:25 | INFO    | inference.M4_commissions | Scoring terminé : 6 alertes en 26.8s
+2026-07-06 08:39:25 | INFO    | inference.M4_commissions | Exports : ['M4_commissions_alertes.csv', 'M4_commissions_scores.parquet', 'M4_commissions_stats.json']
+2026-07-06 08:39:25 | INFO    | monitoring.metrics | [m4_commissions] n_alertes=6 | n_jours_services=318 | services_inconnus=[] | duree_s=26.8 | n_entree=25456467
+2026-07-06 08:39:26 | INFO    | inference.M5_echec | M5 chargé : LightGBM, 36 features (fuite contrôlée)
+2026-07-06 08:40:23 | INFO    | inference.M5_echec | Scoring terminé : 1257029 alertes en 57.9s
+2026-07-06 08:40:40 | INFO    | inference.M5_echec | Exports : ['M5_echec_alertes.csv', 'M5_echec_scores.parquet', 'M5_echec_stats.json']
+2026-07-06 08:40:40 | INFO    | monitoring.metrics | [m5_echec] n_alertes=1257029 | pct_alertes=4.938 | proba_moyenne=0.1813 | seuil=0.8 | duree_s=57.9 | n_entree=25456467
+2026-07-06 08:40:40 | INFO    | inference.M6_reconciliation | M6 chargé : préfixes complémentaires {'TC': 'CO', 'XX': 'RC'}
+2026-07-06 08:42:10 | INFO    | inference.M6_reconciliation | Scoring terminé : 536 alertes en 90.1s
+2026-07-06 08:42:10 | INFO    | inference.M6_reconciliation | Exports : ['M6_reconciliation_alertes.csv', 'M6_reconciliation_scores.parquet', 'M6_reconciliation_stats.json']
+2026-07-06 08:42:10 | INFO    | monitoring.metrics | [m6_reconciliation] n_alertes=536 | n_a_reconcilier=102426 | n_auto_fiable=100156 | n_suggestion=1961 | n_manuel=309 | taux_auto_pct=97.8 | gain_heures=5008.0 | duree_s=90.1 | n_entree=25456467
+2026-07-06 08:42:10 | INFO    | monitoring.metrics | Run 20260706_081457 finalisé (1633.0s)
+2026-07-06 08:42:10 | INFO    | pipeline | ═══ RUN 20260706_081457 ✅ COMPLET → /home/koceila_salem_orange_com/ML/outputs/runs/20260706_081457 ═══

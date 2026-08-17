@@ -14,15 +14,6 @@ data/processed/
 *.xlsx
 *.zip
 
-# Outputs générés
-outputs/
-models/
-logs/
-*.log
-
-# Runs / historiques
-outputs/runs/
-outputs/historique_runs.jsonl
 
 # Secrets
 .env
