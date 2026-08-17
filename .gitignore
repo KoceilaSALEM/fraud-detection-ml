@@ -3,24 +3,55 @@
 venv/
 env/
 __pycache__/
-*.pyc
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .ipynb_checkpoints/
 
-# Données lourdes / sensibles
-data/raw/
-data/processed/
+# Données potentiellement sensibles / volumineuses
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
 *.csv
 *.parquet
 *.xlsx
+*.xls
 *.zip
 
+# Artefacts générés localement
+models/**/*
+!models/.gitkeep
+outputs/**/*
+!outputs/.gitkeep
+logs/**/*
+!logs/.gitkeep
 
-# Secrets
+# Notebooks : conserver les sources, ignorer les variantes exécutées
+notebooks/**/*_executed.ipynb
+
+# Secrets / credentials
 .env
 .env.*
+!.env.example
 *.key
 *.pem
+*.p12
+*.pfx
+secrets.toml
+.streamlit/secrets.toml
 
-# Système
+# Couverture / build
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Fichiers système / transferts Windows
 .DS_Store
 Thumbs.db
+Zone.Identifier
+Zone.sav
+*:Zone.Identifier
